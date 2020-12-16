@@ -1,0 +1,555 @@
+---
+title: "Distance Analysis"
+author: "Coleman Harris, Simon Vandekar, Ruby Xiong"
+date: "12/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::knit_hooks$set(GPs=function(before, options, envir){
+  if (before){
+    cex=1.5
+    par(mgp=c(1.7,.7,0), lwd=1.5, lend=2,
+        cex.lab=0.8*cex, cex.axis=0.8*cex, cex.main=1*cex,
+        mar=c(2.8,1.8,1.8,0), bty='l', oma=c(0,0,2,0))}
+})
+knitr::opts_chunk$set(echo = TRUE, fig.height = 4, fig.width = 4, GPs=TRUE, cache=TRUE, cache.lazy = FALSE)
+```
+
+# Setup
+
+```{r loadData}
+### LIBRARIES ###
+library(lme4) # lmer, glmer
+library(lmerTest) # tests for lme4
+library(emmeans) # emmeans and emtrends
+library(FNN) # nearest neighbor
+library(sjPlot) # tab_model
+#library(INLA)
+library(parallel)
+library(splines) #ns
+library(nnet) # multinom
+library(ggplot2)
+library(RColorBrewer)
+
+
+cols = brewer.pal(n=8, name='Set1')
+transpcols = col2rgb(cols)
+  transpcols = rgb(transpcols[1,], transpcols[2,], transpcols[3,], maxColorValue = 255, alpha = 127)
+colscale = c('#f0f9e8', '#ccebc5', '#a8ddb5','#7bccc4','#4eb3d3', '#2b8cbe', '#08589e')
+
+ncores = 24
+
+sc = readRDS('clustering/sc_data_for_ruby.rds')
+sc[,"Slide_Region"]<- paste(sc$SlideID,sc$region, sep="_") #sprintf('%s\n%s',sc$SlideID,sc$region)
+
+
+# get distance to nearest epithelial cell
+sc <- do.call(rbind, by(sc,sc$Slide_Region,function(df){df$dist = NA; df$dist[df$stromal_cells==1] =FNN::get.knnx(df[df$epi==1,c('x', 'y')],df[df$stromal_cells==1,c('x', 'y')], k=1)$nn.dist; df}))
+
+sc$cd4 = ifelse(sc$mcl_cd4>0.9, 1, 0)
+sc$cd8 = ifelse(sc$mcl_cd8>0.9, 1, 0)
+
+os = min(sc$dist[sc$dist>0], na.rm=TRUE )
+sc$log.dist = log10(sc$dist + os)
+sc$dist.cat = cut(sc$dist, breaks=c(-Inf, 0, 250, 500, Inf), labels=c('inside', 'adjacent', 'proximal', 'distal') )
+#sc.dist$log.dist <- log10(sc.dist$dist+1)
+sc = sc[!is.na(sc[, 'adenSSLcrc']),]
+
+# get boundary cells
+
+# get signed distance to the boundary
+
+
+subset = sc[sc[,"stromal_cells"]==1,]
+rownames(subset) = subset$ID = 1:nrow(subset)
+# To log transform without zeros add in minimum nonzero distance os is the minimum offset
+subsets = by(subset, subset$Slide_Region, function(x) x)
+#saveRDS(subset, '/media/disk2/atlas_mxif/spatial_category_analysis.rds')
+
+cellvars = c('Median_Cell_CD4', 'Median_Cell_CD8', 'Median_Cell_CD3D', 'Median_Cell_FOXP3')
+
+
+```
+
+# Descriptive statistics
+
+# Distance models
+
+## Distance to the boundary in all cells
+
+## Distance in all cells including zeros
+```{r, eval=FALSE}
+model1 <- lme4::lmer(log10(dist + os) ~ adenSSLcrc * ( Median_Cell_CD3D * (Median_Cell_CD8 + Median_Cell_CD4) )+(1|TissueID), data=subset)
+model1 = as_lmerModLmerTest(model1)
+```
+
+
+```{r, eval=FALSE}
+lmerTest:::summary.lmerModLmerTest(model1)
+sjPlot::tab_model(model1, show.stat = TRUE, string.stat = "t", show.p=TRUE)
+```
+
+
+Anova summary of results identifying contributing effects.
+```{r, results='asis', message=FALSE, eval=FALSE}
+knitr::kable(lmerTest:::anova.lmerModLmerTest(model1, type='III'), digits=3)
+```
+
+
+```{r REanova, eval=FALSE}
+lmerTest::ranova(model1)
+```
+
+
+```{r qqplots, eval=FALSE}
+par(mfrow=c(1,3))
+rand.eff <- lme4::ranef(model1)
+qqnorm(scale(residuals(model1)), main = 'Residual Q-Q plot')
+abline(a=0, b=1, lty=2)
+
+qqnorm(scale(rand.eff$TissueID[,1]), main = 'Tissue ID effect Q-Q plot')
+abline(a=0, b=1, lty=2)
+```
+
+
+Plot the results of the 3-way interaction.
+
+```{r plotDistanceResults, eval=FALSE}
+
+
+CD8CIs = as.data.frame(summary(emtrends(model1, ~ Median_Cell_CD3D * adenSSLcrc, var='Median_Cell_CD8', at=list(Median_Cell_CD3D=c(1, 3)) )))
+CD8CIs[,c(3,6,7)] = 10^CD8CIs[,c(3,6,7)]
+CD4CIs = as.data.frame(summary(emtrends(model1, ~ Median_Cell_CD3D * adenSSLcrc, var='Median_Cell_CD4', at=list(Median_Cell_CD3D=c(1, 3)) ) ))
+CD4CIs[,c(3,6,7)] = 10^CD4CIs[,c(3,6,7)]
+knitr::kable(CD4CIs, caption = 'CD4 expression is associated with spatial infiltration of T-cells in the lesion microenvironment.')
+knitr::kable(CD8CIs, caption = 'CD8 expression is associated with spatial infiltration of T-cells in the lesion microenvironment.')
+
+
+CD8CIs = as.data.frame(summary(emtrends(model1, ~ Median_Cell_CD3D * adenSSLcrc, var='Median_Cell_CD8', at=list(Median_Cell_CD3D=c(1, 3)) )))
+CD8CIs[,c(3,6,7)] = 10^CD8CIs[,c(3,6,7)]
+CD4CIs = as.data.frame(summary(emtrends(model1, ~ Median_Cell_CD3D * adenSSLcrc, var='Median_Cell_CD4', at=list(Median_Cell_CD3D=c(1, 3)) ) ))
+CD4CIs[,c(3,6,7)] = 10^CD4CIs[,c(3,6,7)]
+knitr::kable(CD4CIs, caption = 'CD4 expression is associated with spatial infiltration of T-cells in the lesion microenvironment.')
+knitr::kable(CD8CIs, caption = 'CD8 expression is associated with spatial infiltration of T-cells in the lesion microenvironment.')
+
+#rg = ref_grid(hc.model.cerv, at=list('Age.in.months'=seq(min(data$Age.in.months), max(data$Age.in.months), length.out=100), 'Group'='HC') )
+#data$pred = NA
+#pred = predict(hc.model.cerv, re.form=~(1 | ID))
+#data[match(names(pred), rownames(data)), 'pred'] = pred
+#plot(fits$Age.in.months, fits$emmean, ylim = range(data$pred, na.rm=TRUE), xlim = range(data$Age.in.months) + c(-1, 1)*.5, pch=19, type='n',
+#     xlab='Age (Months)', ylab = 'Cord CSA')
+
+#points(sort(fits$Age.in.months, decreasing = FALSE), fits$lower.CL, lty=2 , type='l')
+#points(sort(fits$Age.in.months, decreasing = TRUE), fits$upper.CL[order(fits$Age.in.months, decreasing = TRUE)] , lty=2, type='l')
+#points(fits$Age.in.months, fits$emmean, type='l')
+#pts = do.call(rbind, by(data[,c('Age.in.months', 'pred', 'Sex')], data$ID, function(x) x[1,]))
+#points(pts[,1], pts[,2], pch=19, col=cols[as.numeric(as.factor(pts$Sex))])
+#legend('topright', fill=cols[1:2], legend = levels(as.factor(pts$Sex)), bty='n')
+```
+
+
+
+## A spatial distance model in INLA
+
+
+
+```{r, eval=FALSE}
+
+
+#library(spaMM)
+#model1.spat = fitme(log.dist ~ Median_Cell_CD3D + Matern(1 | x + y), data=as.data.frame(subset[ subset$Slide_Region==subset$Slide_Region[1], ]) ) # * ( Median_Cell_CD3D * (Median_Cell_CD8 + Median_Cell_CD4) ) + 
+
+# create inla graph coding dependence structure
+# neighbors are a distance less than ndist
+#nbs = lapply(1:nrow(subset), function(ind) nns$nn.index[ind, which(nns$nn.dist[ind,]<ndist) ])
+ndist = 200
+# these need to be computed separately by Slide_Region
+coords = by(subset[,c('x', 'y')], subset$Slide_Region, function(x) as.matrix(x))
+# need this nb object class from spdep package
+test = spdep::dnearneigh(subsets[[1]], d1=0, d2 = ndist)
+
+
+# checks indexing
+#rawinds = parallel::mclapply(nbs, function(x){ ans = FNN::get.knn(x, k=20); ans  }, mc.cores=ncores)
+#rownames(nbs[[2]])[rawinds[[2]]$nn.index[1,]]
+# Manually create an nb object using the KNN function (which is faster than spdep)
+nbs = parallel::mclapply(subsets, function(x){ ans = FNN::get.knn(x, k=50)
+ans$nn.index = t(apply(ans$nn.index, 1, function(y) as.integer(rownames(x)[y]) )); ans  }, mc.cores=ncores)
+nbs = do.call(c, lapply(nbs, function(nb) lapply(1:nrow(nb$nn.index), function(ind) nb$nn.index[ind, which(nb$nn.dist[ind,]<ndist) ] ) ))
+nbs = lapply(nbs, function(x) if(length(x)==0) 0L else x)
+attributes(nbs) = attributes(test)
+attributes(nbs)$region.id = unlist(sapply(subsets, rownames))
+
+ig = INLA:::inla.read.graph(test)
+model1.spat = inla(log.dist ~ 1 +  ( Median_Cell_CD3D * (Median_Cell_CD8 + Median_Cell_CD4) ) + 
+    f(ID, model = "besag", graph = ig),
+  data = subsets[[1]], family ="gaussian",
+  control.predictor = list(compute = TRUE),
+  control.compute = list(dic = TRUE, waic = TRUE))
+
+summary(model1.spat)
+```
+
+
+The means and standard errors of the spatial model were similar to using lm. Here, I'm going to use lm to estimate effects at the region level and then fit a second level GEE to the estimates from the first level models.
+
+```{r, eval=FALSE}
+# compare to random effects model
+df=5
+model1 <- lm(log.dist ~  ns(Median_Cell_CD3D, df=df) * (ns(Median_Cell_CD8, df=df) + ns(Median_Cell_CD4, df=df) ), data=subsets[[1]])
+model1 <- lm(log.dist ~  Median_Cell_CD3D * (Median_Cell_CD8+Median_Cell_CD4 ), data=subsets[[1]])
+
+
+rg = ref_grid(model1, at=list('Median_Cell_CD8'=seq(min(subsets[[1]]$Median_Cell_CD8), max(subsets[[1]]$Median_Cell_CD8), length.out=100), 'Median_Cell_CD3D'=c(1,3)) )
+CIs = emmeans(rg, ~ 1 | Median_Cell_CD8 + Median_Cell_CD3D)
+fits = as.data.frame(summary(CIs))
+
+with(subsets[[1]], plot(Median_Cell_CD8[ Median_Cell_CD3D>=3], log.dist[ Median_Cell_CD3D>=3]))
+with(fits[ fits$Median_Cell_CD3D==3,], points(Median_Cell_CD8, emmean, type='l'))
+```
+
+## Categorical distance analysis
+
+```{r, fig.height=4, fig.width=12, eval=FALSE}
+layout(matrix(1:3, nrow=1))
+invisible(lapply(subsets, function(data){
+plot(data[,c('dist.cat')] , data[,'Median_Cell_CD3D'])
+plot(data[,c('dist.cat')] , data[,'Median_Cell_CD8'], main=paste(data$Slide_Region[1], data$adenSSLcrc[1]) )
+     plot(data[,c('dist.cat')] , data[,'Median_Cell_CD4']) }))
+```
+
+Here, I'm treating the distance as fixed and modeling the expression levels of the markers
+
+```{r, eval=TRUE}
+aggdata = do.call(rbind, lapply(subsets, function(data){
+  ans = by(data[,cellvars], data$dist.cat, colMeans, na.rm=TRUE)
+  ans = as.data.frame(do.call(rbind, lapply(ans, function(x) if(is.null(x)) rep(NA, length(cellvars)) else x )))
+  ans$dist.cat = factor(rownames(ans), levels=levels(data$dist.cat))
+  # add 1/2 to all categories
+  ans$prop = (table(data$dist.cat) +0.5)/(nrow(data) +0.5*nlevels(data$dist.cat))
+  ans$logodds = log(ans$prop/ans$prop[ans$dist.cat=='inside'])
+  ans$logodds[ans$dist.cat=='inside'] = NA
+  ans$Slide_Region = data$Slide_Region[1]
+  ans$adenSSLcrc = data$adenSSLcrc[1]
+  ans$TissueID = data$TissueID[1]
+  ans
+}))
+
+
+
+expit = function(x) 1/(1+exp(-x))
+
+# Differences in proportion of cells at each distance
+model = lmer(logodds ~ dist.cat * adenSSLcrc + (1 | TissueID), data=aggdata)
+knitr::kable(anova(model, type='2'))
+fits_prop = as.data.frame(summary(emmeans(model, ~ 1 | dist.cat + adenSSLcrc) ))
+fits_prop[,c('emmean', 'lower.CL', 'upper.CL')] = exp(fits_prop[,c('emmean', 'lower.CL', 'upper.CL')])
+by(fits_prop[,c('emmean', 'lower.CL', 'upper.CL')], fits_prop[,c('adenSSLcrc')], function(x){  ans = x; ans[,1] = x[,1]/sum(c(1, x[,1])); ans[,2:3] = ans[,2:3]*ans[1,1]; ans })
+knitr::kable(fits_prop)
+```
+
+
+```{r, fig.width=12, fig.height=4}
+require(ggplot2);require(Hmisc)
+
+# Differences in CD4 by compartment
+model = lmer(Median_Cell_CD4 ~ dist.cat * adenSSLcrc + (1 | TissueID), data=aggdata)
+knitr::kable(anova(model, type='2'))
+CIs = emmeans(model, ~ 1 | dist.cat + adenSSLcrc)
+fits = as.data.frame(summary(CIs))
+knitr::kable(fits)
+df1 = as.data.frame(CIs)
+df1$marker='CD4'
+
+# Differences in CD8 by compartment
+model = lmer(Median_Cell_CD8 ~ dist.cat * adenSSLcrc + (1 | TissueID), data=aggdata)
+knitr::kable(anova(model, type='2'))
+CIs = emmeans(model, ~ 1 | dist.cat + adenSSLcrc)
+fits = as.data.frame(summary(CIs))
+knitr::kable(fits)
+df2 = as.data.frame(CIs)
+df2$marker='CD8'
+
+# Differences in CD3 by compartment
+model = lmer(Median_Cell_CD3D ~ dist.cat * adenSSLcrc + (1 | TissueID), data=aggdata)
+knitr::kable(anova(model, type='2'))
+CIs = emmeans(model, ~ 1 | dist.cat + adenSSLcrc)
+fits = as.data.frame(summary(CIs))
+knitr::kable(fits)
+df3 = as.data.frame(CIs)
+df3$marker='CD3'
+
+# Differences in FOXP3 by compartment
+model = lmer(Median_Cell_FOXP3 ~ dist.cat * adenSSLcrc + (1 | TissueID), data=aggdata)
+knitr::kable(anova(model, type='2'))
+CIs = emmeans(model, ~ 1 | dist.cat + adenSSLcrc)
+fits = as.data.frame(summary(CIs))
+knitr::kable(fits)
+
+df4 = as.data.frame(CIs)
+df4$marker='FOXP3'
+
+plot_df = rbind(df1,df2,df3,df4)
+colnames(plot_df)[c(1,2,3)] = c('Distance category','Tumor type','Mean expression')
+
+
+plot_dat2 = data.frame(c(aggdata$Median_Cell_CD4,aggdata$Median_Cell_CD3D,aggdata$Median_Cell_CD8,aggdata$Median_Cell_FOXP3))
+colnames(plot_dat2) = c('expression')
+plot_dat2$`Distance category` = rep(aggdata$dist.cat,4)
+plot_dat2$`Tumor type` = rep(aggdata$adenSSLcrc,4)
+plot_dat2$marker = rep(c('CD4','CD8','CD3','FOXP3'),each = nrow(aggdata))
+
+plot_dat2[,c('Mean expression','lower.CL','upper.CL')] = NA
+
+for(i in 1:nrow(plot_dat2)){
+  r = plot_dat2[i,]
+  bools = (plot_df$`Distance category` == r$`Distance category`) & 
+    (plot_df$`Tumor type` == r$`Tumor type`) &
+    (plot_df$marker == r$marker)
+  plot_dat2[i,c('Mean expression','lower.CL','upper.CL')] = plot_df[bools,c('Mean expression','lower.CL','upper.CL')]
+}
+
+ggplot(plot_dat2) +
+  geom_point(aes(x=`Distance category`,y=expression,color=`Tumor type`),
+             position = position_dodge(1),
+             size=1,
+             alpha=0.35) + 
+  geom_point(aes(x=`Distance category`,y=`Mean expression`,color=`Tumor type`),
+             position = position_dodge(1),
+             size=3) +
+  geom_errorbar(aes(x=`Distance category`,
+                    ymin=lower.CL,
+                    ymax=upper.CL,
+                    width=0.01,color=`Tumor type`),
+                position = position_dodge(1),
+                size=1) +
+  facet_wrap(facets=~marker,ncol=4)
+  #theme_minimal()
+```
+
+
+
+```{r data}
+stromal <- sc
+stromal[stromal[,'epi']==1,'TissueType'] <- "Epithelium"
+stromal[stromal[,'epi']==1,'log.dist'] <- -1
+stromal <- stromal[!is.na(stromal$log.dist),]
+stromal[,'dist.cat'] <- cut_width(stromal$log.dist, width = 1,vcenter=0.5, closed = 'left')
+stromal[,'TissueType'] <- factor(stromal[,'TissueType'], levels=c("Epithelium","Adenoma","Normal Colon","CRC" ))
+```
+
+```{r}
+#Individual plot for MAP05994_0000_01A_0 region_005
+sc.dist.sub <- stromal[stromal$Slide_Region=='MAP05994_0000_01A_0_region_005',]
+sc.dist.sub[sc.dist.sub$epi==1,'Median_Cell_CD4'] <- -1
+sc.dist.sub[,'CD4_cat'] <- cut_width(sc.dist.sub[,'Median_Cell_CD4'],width = 1,center=0.5,closed = 'left')
+sc.dist.sub[sc.dist.sub$epi==1,'Median_Cell_CD8'] <- -1
+sc.dist.sub[,'CD8_cat'] <- cut_width(sc.dist.sub[,'Median_Cell_CD8'],width = 1,center=0.5,closed = 'left')
+p_sub <- ggplot(data=sc.dist.sub,aes(group=TissueType))+
+  geom_point(mapping = aes(x=x,y=y,col=dist.cat,shape=TissueType),alpha=0.3)+
+  scale_shape_manual(values=c(19, 20, 17, 3))+
+  scale_color_manual(values=c('#CCCCCC','#000066','#0000CC','#3399FF','#33CCFF','#33FFFF'))+
+  ggtitle('log distance')+
+  #scale_x_log10()+scale_y_log10()+
+  theme_bw()+coord_fixed(ratio = 1)
+p_sub
+p_sub1 <- ggplot(data=sc.dist.sub,aes(group=TissueType))+
+  geom_point(data=sc.dist.sub,mapping = aes(x=x,y=y,col=CD4_cat,shape=TissueType),alpha=0.5)+
+  scale_shape_manual(values=c(19, 20, 17, 3))+
+  scale_color_manual(values=c('#CCCCCC','lightgoldenrodyellow','lightgoldenrod1','gold','red'))+
+  ggtitle('log distance')+
+  #scale_x_log10()+scale_y_log10()+
+  theme_bw()+coord_fixed(ratio = 1)
+p_sub1
+p_sub2 <- ggplot(data=sc.dist.sub,aes(group=TissueType))+
+  geom_point(mapping = aes(x=x,y=y,col=CD8_cat,shape=TissueType),alpha=0.5)+
+  #geom_point(mapping = aes(x=x,y=y,col=Median_Cell_CD4,shape=TissueType),alpha=0.3)+
+ 
+  scale_shape_manual(values=c(19, 20, 17, 3))+
+  scale_color_manual(values=c('#CCCCCC','olivedrab1','olivedrab2','olivedrab3','darkgreen','black'))+
+  #scale_color_gradient(low="grey", high="darkgreen")+
+  ggtitle('log distance')+
+  #scale_x_log10()+scale_y_log10()+
+  theme_bw()+coord_fixed(ratio = 1)
+p_sub2
+p_sub3 <- ggplot(data=sc.dist.sub,aes(group=TissueType))+
+  geom_point(data=sc.dist.sub,mapping = aes(x=x,y=y,col=CD4_cat,shape=TissueType,size=log.dist),alpha=0.5)+
+  scale_shape_manual(values=c(19, 20, 17, 3))+
+  scale_color_manual(values=c('#CCCCCC','lightgoldenrodyellow','lightgoldenrod1','gold','red'))+
+  ggtitle('log distance')+
+  #scale_x_log10()+scale_y_log10()+
+  theme_bw()+coord_fixed(ratio = 1)
+p_sub3
+
+```
+
+
+
+## Proportion in the different compartments
+
+Here, I'm modeling the proportion of CD8 and CD4 positive cells in different compartments.
+
+```{r}
+sc$adenSSLcrc = as.factor(sc$adenSSLcrc)
+qs = quantile(sc[,'Median_Cell_CD4'], probs=ppoints(100))
+prop_fxns = by(sc, sc$Slide_Region, function(data){
+  marker = 'Median_Cell_CD4'
+  compartment = 'epi'
+  ss = data[, c(marker,compartment)]
+  t(sapply(qs, function(qu, ss){by(ss[,marker], ss[,compartment], function(x) mean(x>qu) ) }, ss=ss))
+})
+
+# plot for epithelium
+plot(x=1, y=1, ylim=c(0,1), xlim=range(qs), type='n', xlab='CD4 level', ylab='Proportion of cells', main='CD4 Concentration in Epithelium')
+invisible(sapply(names(prop_fxns), function(ind){ if(any(grepl("^1$", colnames(prop_fxns[[ind]]))) ){ points(qs, prop_fxns[[ind]][,"1"], type='l', col=cols[ sc[which(sc$Slide_Region==ind)[1], 'adenSSLcrc']] )} }))
+legend('bottomleft', legend=levels(sc$adenSSLcrc), fill=cols[1:nlevels(sc$adenSSLcrc)])
+
+# for stroma
+plot(x=1, y=1, ylim=c(0,1), xlim=range(qs), type='n', xlab='CD4 level', ylab='Proportion of cells', main='CD4 Concentration in Stroma')
+invisible(sapply(names(prop_fxns), function(ind){ if(any(grepl("^0$", colnames(prop_fxns[[ind]]))) ){ points(qs, prop_fxns[[ind]][,"0"], type='l', col=cols[ sc[which(sc$Slide_Region==ind)[1], 'adenSSLcrc']] )} }))
+legend('bottomleft', legend=levels(sc$adenSSLcrc), fill=cols[1:nlevels(sc$adenSSLcrc)])
+
+qs = quantile(sc[,'Median_Cell_NAKATPASE'], probs=seq(0,1, length.out=100))
+prop_fxns = by(sc, sc$Slide_Region, function(data){
+  marker = 'Median_Cell_NAKATPASE'
+  compartment = NULL #'epi'
+  if(is.null(compartment)){
+     colMeans(outer(data[,marker], qs, FUN = ">") )
+    }else{
+    ss = data[, c(marker,compartment)]
+    t(sapply(qs, function(qu, ss){by(ss[,marker], ss[,compartment], function(x) mean(x>qu) ) }, ss=ss))
+  }
+})
+
+
+plot(x=1, y=1, ylim=c(0,1), xlim=range(qs), type='n', xlab='NAKATPASE level', ylab='Proportion of cells', main='NAKATPASE Concentration in Tissue')
+invisible(sapply(names(prop_fxns), function(ind) points(qs, prop_fxns[[ind]], type='l', col=cols[ sc[which(sc$Slide_Region==ind)[1], 'adenSSLcrc']] ) ))
+legend('bottomleft', legend=levels(sc$adenSSLcrc), fill=cols[1:nlevels(sc$adenSSLcrc)])
+```
+
+```{r, eval=FALSE}
+set.seed(2121)
+#data1 <- pffrSim(scenario="ff", n=40)
+#t <- attr(data1, "yindex")
+#s <- attr(data1, "xindex")
+
+Y = as.matrix(do.call(rbind, lapply(prop_fxns, function(x){ if(any(grepl("^1$", colnames(x))) ){ x[,"1" ]}} )))
+fdata = data.frame( Slide_Region=rownames(Y))
+fdata$Y = Y
+fdata = merge(fdata, aggdata[aggdata$dist.cat=='inside',], all.x=TRUE)
+fdata$adenSSLcrc = as.factor(fdata$adenSSLcrc)
+fdata$TissueID = as.factor(fdata$TissueID)
+# should figure out why there's an NA here
+fdata = fdata[!is.na(fdata$TissueID),]
+test = refund::pffr(Y ~ adenSSLcrc + s(TissueID, bs='re'), yind=qs, data=fdata)
+```
+
+
+Here, I'm modeling the proportion of CD4/CD8 positive cells in the epithelium and stroma.
+
+```{r, results='asis'}
+sc$cd4pos = ifelse(sc$Median_Cell_CD4>1, 1, 0)
+sc$cd8pos = ifelse(sc$Median_Cell_CD8>1, 1, 0)
+scs = by(sc, sc$Slide_Region, function(x) x)
+
+aggdata = do.call(rbind, lapply(scs, function(data){
+  ans = by(data[,c('mcl_cd4', 'mcl_cd8', 'cd4', 'cd8', 'cd4pos', 'cd8pos', 'Median_Cell_CD4', 'Median_Cell_CD8')], data$epi, colMeans, na.rm=TRUE)
+  ans = as.data.frame(do.call(rbind, lapply(ans, function(x) if(is.null(x)) rep(NA, length(cellvars)) else x )))
+  ans$epi = factor(rownames(ans))
+  ans$Slide_Region = data$Slide_Region[1]
+  ans$adenSSLcrc = data$adenSSLcrc[1]
+  ans$counts = c(table(data$epi))
+  ans$TissueID = data$TissueID[1]
+  ans
+}))
+
+#hist(aggdata$cd8)
+#plot(aggdata$adenSSLcrc, aggdata$cd8)
+aggdata$adenSSLcrc = factor(aggdata$adenSSLcrc, c('adenoma', 'SSL', 'CRC'))
+layout(matrix(1))
+vars = c('cd4', 'cd8', 'cd4pos', 'cd8pos')
+for(var in vars){
+  saggdata = aggdata
+  form = as.formula(paste(var, '~ adenSSLcrc * epi'))
+  model = glm(form, family=quasibinomial(logit), data=saggdata, weights = counts)
+  #model = glmer( cd8 ~ adenSSLcrc + (1 | TissueID), data=aggdata, family = binomial() )
+  print(knitr::kable(car::Anova(model, type='2'), digits = 3))
+  CIs = emmeans(model, ~ 1 | epi + adenSSLcrc, type='response')
+  fits = as.data.frame(summary(CIs))
+  #knitr::kable(fits)
+  
+  invisible(sapply(levels(fits$epi), function(y){
+  bpinfo = barplot(as.matrix(fits[fits$epi==y, c("prob")]), beside = TRUE, ylim=pmax(0, range(c(fits[fits$epi==y, c("asymp.LCL", "asymp.UCL")]) )), col=cols, main=var, names.arg = if(y=='0') 'Stroma' else 'Epithelium')
+  bpinfo = data.frame(x=c(bpinfo), epi=rep(c(0,1), each=3), adenSSLcrc=factor(rep(c('adenoma', 'SSL', 'CRC'), 2), levels=c('adenoma', 'SSL', 'CRC') ) )
+  saggdata = merge(saggdata, bpinfo)
+  points(jitter(saggdata$x[saggdata$epi==y]), saggdata[saggdata$epi==y,var], pch=16)
+  segments(x0=bpinfo$x, y0=fits$asymp.LCL[fits$epi==y], y1=fits$asymp.UCL[fits$epi==y])
+  legend('topright', legend = levels(fits$adenSSLcrc), fill=cols[1:nlevels(fits$adenSSLcrc)], bty='n')
+  }))
+  
+
+  bp = as.matrix(reshape(fits, direction = 'wide', timevar='epi', idvar='adenSSLcrc')[, c('prob.0', 'prob.1')])
+  colnames(bp) = c('stroma', 'epithelium')
+  bpinfo = barplot(bp, beside = TRUE, ylim=pmax(0, range(c(fits[, c("asymp.LCL", "asymp.UCL")]) )), col=c(do.call(cbind, rep(list(cols[1:nrow(bp)]), ncol(bp)) ) ), main=var)
+  bpinfo = data.frame(x=c(bpinfo), epi=rep(c(0,1), each=3), adenSSLcrc=factor(rep(c('adenoma', 'SSL', 'CRC'), 2), levels=c('adenoma', 'SSL', 'CRC') ) )
+  saggdata = merge(saggdata, bpinfo)
+  fits = merge(fits, bpinfo)
+  points(jitter(saggdata$x), saggdata[,var], pch=16)
+  segments(x0=fits$x, y0=fits$asymp.LCL, y1=fits$asymp.UCL)
+  legend('topright', legend = levels(fits$adenSSLcrc), fill=cols[1:nlevels(fits$adenSSLcrc)], bty='n')
+}
+```
+
+
+
+```{r, eval=FALSE}
+# Unfinished code to model the means.
+vars = c('Median_Cell_CD4', 'Median_Cell_CD8')
+for(var in vars){
+  saggdata = aggdata
+  form = as.formula(paste(var, '~ adenSSLcrc * epi + (1 | TissueID)'))
+  model = lmer(form, data=saggdata)
+  #model = glmer( cd8 ~ adenSSLcrc + (1 | TissueID), data=aggdata, family = binomial() )
+  print(knitr::kable(lmerTest:::anova.lmerModLmerTest(model, type='2'), digits = 3))
+  CIs = emmeans(model, ~ 1 | epi + adenSSLcrc, type='response')
+  fits = as.data.frame(summary(CIs))
+  #knitr::kable(fits)
+  fits$x = as.numeric(fits$adenSSLcrc)+0.5
+  saggdata$x = as.numeric(saggdata$adenSSLcrc) + 0.5
+  invisible(sapply(levels(fits$epi), function(y){
+    plot(saggdata$x, saggdata[saggdata$epi==y, var], ylim=range(c(fits[fits$epi==y, c("lower.CL", "upper.CL")]) ), col=cols, main=var, names.arg = if(y=='0') 'Stroma' else 'Epithelium')
+  #plot(fits$x, fits[fits$epi==y, c("emmean")], ylim=range(c(fits[fits$epi==y, c("lower.CL", "upper.CL")]) ), col=cols, main=var, names.arg = if(y=='0') 'Stroma' else 'Epithelium')
+  points(jitter(saggdata$x[saggdata$epi==y]), saggdata[saggdata$epi==y,var], pch=16)
+  segments(x0=bpinfo$x, y0=fits$lower.CL[fits$epi==y], y1=fits$upper.CL[fits$epi==y])
+  legend('topright', legend = levels(fits$adenSSLcrc), fill=cols[1:nlevels(fits$adenSSLcrc)], bty='n')
+  }))
+```
+
+
+
+
+Here, I'm modeling probabilities of being in each distance compartment/group continuously as a function of the markers.
+
+
+```{r, eval=FALSE}
+df=3
+qs = apply(subset[,cellvars], 2, quantile, probs=c(0.1, 0.9))
+apply(qs, 2, function(x) seq(x[1], x[2], length.out=30))
+aggdata = do.call(rbind, lapply(subsets, function(data){
+  data$dist.cat = factor(data$dist.cat)
+  model <- multinom(dist.cat ~  ns(Median_Cell_CD3D, df=df) * ns(Median_Cell_CD8, df=df) *ns(Median_Cell_CD4, df=df) , data=data)
+  predict(model)
+  ans = by(data[,cellvars], data$dist.cat, colMeans, na.rm=TRUE)
+  ans = as.data.frame(do.call(rbind, lapply(ans, function(x) if(is.null(x)) rep(NA, length(cellvars)) else x )))
+  ans$dist.cat = rownames(ans)
+  ans$Slide_Region = data$Slide_Region[1]
+  ans$adenSSLcrc = data$adenSSLcrc[1]
+  ans$TissueID = data$TissueID[1]
+  ans
+}))
+
+
+with(subsets[[1]], plot(Median_Cell_CD8[ Median_Cell_CD3D>=3], log.dist[ Median_Cell_CD3D>=3]))
+with(fits[ fits$Median_Cell_CD3D==3,], points(Median_Cell_CD8, emmean, type='l'))
+```

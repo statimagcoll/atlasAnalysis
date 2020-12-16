@@ -1,0 +1,217 @@
+---
+title: "Clustering"
+author: "Simon Vandekar"
+date: "10/26/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+library(mclust)
+library(Rtsne)
+library(NMF)
+library(parallel)
+library(RColorBrewer)
+library(pscl)
+
+
+source('R/hierarchical_clustering.R')
+
+knitr::knit_hooks$set(GPs=function(before, options, envir){
+  if (before){
+    cex=1.5
+    par(mgp=c(1.7,.7,0), lwd=1.5, lend=2,
+        cex.lab=0.8*cex, cex.axis=0.8*cex, cex.main=1*cex,
+        mar=c(2.8,1.8,1.8,0), bty='l', oma=c(0,0,2,0))}
+})
+knitr::opts_chunk$set(echo = TRUE, fig.height = 4, fig.width = 4, GPs=TRUE, cache=TRUE, cache.lazy = FALSE)
+cols = c(brewer.pal(n=12, name='Accent'), brewer.pal(n=12, name='Dark2'), brewer.pal(n=12, name='Set3'), brewer.pal(n=8, name='Pastel2'), brewer.pal(n=9, name='Pastel1'))
+transpcols = col2rgb(cols)
+  transpcols = rgb(transpcols[1,], transpcols[2,], transpcols[3,], maxColorValue = 255, alpha = 127)
+colscale = c('#f0f9e8', '#ccebc5', '#a8ddb5','#7bccc4','#4eb3d3', '#2b8cbe', '#08589e')
+set.seed(1234)
+
+ncores=24
+```
+
+```{r, functions, eval=TRUE}
+EBupdate = function(l1s, G=3){
+  
+  # get level 1 parameters
+  #Gzs = sapply(l1s, function(x) x$G)
+  #nzs = lapply(l1s, function(x) colSums(x$z))
+  # for indexing the elements from the l2 clustering
+  Gzs = c(0,sapply(l1s, function(x) x$G))
+  nl1s = length(l1s)
+  
+  
+  params = do.call(rbind, lapply(l1s, function(x) t(x$parameters$mean)))
+  # fit second level model
+  l2 = Mclust(params, G=G)
+  # probabilities from l2 model
+  pzs=lapply(1:nl1s, function(l1ind) l2$z[(sum(Gzs[1:l1ind])+1):sum(Gzs[1:(l1ind+1)]),] )
+  
+  # higher cluster labels
+  labels = lapply(pzs, function(x) apply(x, 1, which.max) )
+  
+  #Gz = l2$G
+  
+  # for testing
+  # l1 = l1s[[1]]; Gz = Gzs[[1]]; pz=pzs[[1]]
+  l1s = mapply(function(l1, pz, label){
+    l1$parameters$mean = EBmean(mu=l1$parameters$mean,
+                                sigma = l1$parameters$variance$sigma,
+                                mu0 = l2$parameters$mean,
+                                sigma0=l2$parameters$variance$sigma,
+                                pz=pz, ns = colSums(l1$z))
+    l1$l2labels = label
+    l1$l2pz = pz
+    ans = list(l1) }, l1=l1s, pz=pzs, label=labels)
+  ans = list(l1s=l1s, l2=l2)
+}
+
+# sigma should be an array
+# sigma is array of variances for l1
+# sigma0 is array of variances for l2
+# pz is probability of
+EBmean = function(mu, sigma, mu0, sigma0, pz, ns){
+  ans = do.call(cbind, lapply(1:dim(sigma)[3], function(ind){
+    sig = sigma[,,ind]/ns[ind]
+    mu0s = sapply(1:dim(sigma0)[3], function(ind0){
+      invmat = solve(sig + sigma0[,,ind0])
+      sig %*% invmat %*% mu0[,ind0] + sigma0[,,ind0] %*% invmat %*% mu[,ind]
+    })
+    ans = mu0s %*% pz[ind,]
+  }))
+}
+```
+
+## Data processing
+
+```{r, loadData, eval=TRUE}
+datafile = '/media/disk2/atlas_mxif/colon_map_20201209.rds'
+atl = readRDS(datafile)
+cellvars = grep('Median_Cell', names(atl), value=TRUE)
+# subset out these markers that did not have
+cellvars = cellvars[ - which(cellvars %in% c('Median_Cell_CD45B', 'Median_Cell_GACTIN', 'Median_Cell_PDL1', 'Median_Cell_CD45', 'Median_Cell_DAPI') )]
+
+# remove cells not in the tumor region
+atl = atl[ which(atl$Tumor>0), ]
+hist(atl$Tumor)
+# screen out duplicates due to FOV overlap. Eliot did this with later versions of the data, still some duplicates.
+#atl = atl[ which(!duplicated(atl[,cellvars])),]
+slideIDs = unique(atl$SlideID)
+atl = as.data.frame(atl)
+
+tts = read.csv('../TissueSubTypes Colon Map.csv')
+# match capitalization
+names(tts)[1] = 'TissueID'
+atl = merge(atl, tts, all.x=TRUE)
+atl$adenSSLcrc = ifelse(atl$tissueSubType %in% c('Tub', 'TV'), 'adenoma', 
+                        ifelse(atl$tissueSubType %in% c('HP', 'HP/SSL', 'SSL', 'Tub/SSL'), 'SSL', 
+                               ifelse(atl$tissueSubType %in% c('CRC'), 'CRC', NA )) )
+# subset to non crc samples
+atl = atl[ which(atl$adenSSLcrc!='CRC'),]
+```
+
+
+## Image normalization
+
+```{r normalize, eval=TRUE, fig.height=14, fig.width=10}
+
+var = cellvars[8]
+# choose a subset for testing
+ss = atl[sample(nrow(atl), 200000),]
+# remove the NAs. Should fix this there shouldn't be any NAs
+ss = na.omit(ss[,c(var, 'adenSSLcrc', 'SlideID')])
+# get first slideID for each category. Model is over specified otherwise
+fs = c(by(ss$SlideID, ss$adenSSLcrc, function(x) x[1]))
+form = as.formula(paste(var, '~ adenSSLcrc + SlideID'))
+ss$X = model.matrix(form, data=ss)
+ss$X = ss$X[, grep(paste(fs, collapse='|'), colnames(ss$X), invert=TRUE, value=TRUE)]
+normModel = zeroinfl(as.formula(paste(var, '~ -1 + X')), data=ss, dist = 'negbin')
+# get predicted means from the model
+countCoefs = coef(normModel, model='count')
+ss$means = exp(ss$X %*% countCoefs)
+# formula from here:
+# https://ncss-wpengine.netdna-ssl.com/wp-content/themes/ncss/pdf/Procedures/NCSS/Negative_Binomial_Regression.pdf
+# if negative binomial
+#ss$p = ss$means/(ss$means + normModel$theta)
+
+# plot the fit to the data in each slide
+# for poisson
+#by(ss, ss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var])); hist(x[x[,var]>0,var], prob=TRUE, main=x$SlideID[1]); points(xc, dpois(xc, lambda=x$means[1]), type='l') })
+# for negative binomial
+layout(matrix(1:35, ncol=5, byrow=TRUE))
+by(ss, ss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var])); hist(x[x[,var]>0,var], prob=TRUE, main=x$SlideID[1]); points(xc, dnbinom(xc, mu=x$means[1], size=normModel$theta), type='l') })
+
+# normalizes everything to the first category. Maybe not the best idea.
+refmean = exp(countCoefs)
+
+
+
+# gamma normalization in the nonzero values
+nss = ss[which(ss[,var]!=0),]
+form = as.formula(paste(var, '~ adenSSLcrc + SlideID'))
+nss$X = model.matrix(form, data=nss)
+nss$X = nss$X[, grep(paste(fs, collapse='|'), colnames(nss$X), invert=TRUE, value=TRUE)]
+
+# doesn't fit very well
+#gammaConstantVar = glm(as.formula(paste(var, '~ -1 + X')), data=nss, family=Gamma('log'))
+# allows both gamma parameters to vary
+library(dglm)
+#gammaVarVar = dglm(as.formula(paste(var, '~ -1 + X')), as.formula(paste(var, '~ -1 + X')), data = nss, family=Gamma('log'))
+#lognormalConstantVar = lm(as.formula(paste('log(', var, ')', '~ -1 + X')), data = nss)
+lognormal = dglm(as.formula(paste('log(', var, ')',  '~ -1 + X')), as.formula(paste(var, '~ -1 + X')),data = nss, family = gaussian())
+
+
+### FOR GAMMA
+# get parameters
+gammaCoefs = coef(gammaConstantVar)
+nss$means = exp(nss$X %*% gammaCoefs)
+disp = summary(gammaConstantVar)$dispersion
+# plot the fit to the data in each slide
+# for gamma
+# formulas here: https://stats.stackexchange.com/questions/247624/dispersion-parameter-for-gamma-family
+layout(matrix(1:35, ncol=5, byrow=TRUE))
+invisible(by(nss, nss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var])); hist(x[x[,var]>0,var], prob=TRUE, main=x$SlideID[1]); points(xc, dgamma(xc, shape=disp, rate=1/x$means[1]/disp), type='l') }))
+
+### For Log Normal
+lnCoefs = coef(lognormal)
+nss$lnMeans = nss$X %*% lnCoefs
+nss$sd = sqrt(exp(nss$X %*% coef(lognormal$dispersion.fit)))
+
+layout(matrix(1:35, ncol=5, byrow=TRUE))
+invisible(by(nss, nss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var])); hist(x[x[,var]>0,var], prob=TRUE, main=x$SlideID[1]); points(xc, dnorm(log(xc), mean=x$lnMeans[1], sd=nss$sd[1])/xc, type='l') }))
+```
+
+
+
+```{r applyNormalization, eval=FALSE}
+# log transform
+temp = atl[,cellvars]
+### COMMENT OUT TO NOT TRANSFORM THE DATA
+atl[,cellvars] = log10(temp+1)# log10(sweep(temp+1, 2, colMeans(temp+1), FUN = '/') )
+rm(temp)
+
+# normalize the data by slide
+cellvarsMeans = apply(atl[,cellvars], 2, function(x) mean(x[x>0]))
+atl = as.data.frame(do.call(rbind, by(atl, atl$SlideID, function(data){
+  zeroInds = (data[,cellvars]==0)
+  # only scaling nonzero values
+  datacellvarsMeans = apply(data[,cellvars], 2, function(x) mean(x[x>0]) )
+  datacellvarsSDs = apply(data[,cellvars], 2, function(x) sd(x[x>0]) )
+  # This makes some things negative which is not ideal for NMF.
+  res = scale(data[,cellvars], center = datacellvarsMeans-cellvarsMeans, scale=FALSE)
+  #res = scale(data[,cellvars], center = FALSE, scale=FALSE) # no centering or scaling
+  res[zeroInds] = NA
+  data[,paste0('normed_', cellvars)] = res
+  data
+}) ))
+#atl[,paste0('normed_', cellvars)] = apply(atl[,paste0('normed_', cellvars)], 2, function(x){ans=x+min(x,na.rm=TRUE)+log10(2); ifelse(is.na(ans), 0, ans)})
+
+# plot the normalized data
+
+
+```
