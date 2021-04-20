@@ -10,6 +10,8 @@
 loadQuantifiedPCA = function(dataname='/media/disk2/atlas_mxif/data/colon map batch 1-3 position corrected w immune labels.rds', qcname='/media/disk2/atlas_mxif/data/Colon MAP QC.csv'){
   sc = readRDS(dataname)
   tts = read.csv(qcname)
+  markernames = names(tts)[!names(tts) %in% c("TissueID", "tissueSubType", "broadTissue", "lessBroad")]
+  names(tts)[ names(tts) %in% markernames ] = paste0(markernames, '_QC')
 
   # Eliot's data set
   tts$SlideID = sc$SlideID[match(tts$TissueID, sc$TissueID)]
