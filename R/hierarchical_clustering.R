@@ -1,5 +1,14 @@
 
-### THIS FUNCTION RUNS INTO ISSUES WHEN THE CELL CLASSES ARE UNCERTAIN AT THE FIRST LEVEL
+#' Hierarchical clustering using naive Bayes
+#'
+#' Old script that combines separate clustering algorithms together in a hierarchical approach. Should be revamped before use.
+#' @param slidedata data frame of the markers for each cell.
+#' @param markers data frame indicating the hierarchical structure of the cluster types.
+#' @param probthr Threshold to define marker positive cells
+#' @importFrom combinat permn
+#' @importFrom mclust Mclust priorControl
+#' @importFrom utils capture.output
+#' @importFrom stats predict sd
 HCnaive = function(slidedata, markers, probthr=0.8){
 clusters = grep('cl[0-9]$', names(markers), value=TRUE)
 for(cl in clusters){

@@ -1,0 +1,18 @@
+Package: atlasAnalysis
+Type: Package
+Title: PCA analysis scripts
+Version: 0.0.1
+Authors@R: person('Simon', 'Vandekar', email='simon.vandekar@vanderbilt.edu', role=c('aut', 'cre'))
+Description: Scripts used to analyze the PCA data and evaluate methods.
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Collate: 
+  'loadQuantifiedPCA.R'
+  'hierarchical_clustering.R'
+Imports:
+  combinat,
+  mclust
+Suggests:
+  testthat
+RoxygenNote: 7.1.1
