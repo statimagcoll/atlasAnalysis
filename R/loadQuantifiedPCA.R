@@ -12,6 +12,8 @@ loadQuantifiedPCA = function(dataname='/media/disk2/atlas_mxif/data/colon map ba
   tts = read.csv(qcname)
   markernames = names(tts)[!names(tts) %in% c("TissueID", "tissueSubType", "broadTissue", "lessBroad")]
   names(tts)[ names(tts) %in% markernames ] = paste0(markernames, '_QC')
+  # Fix mislabeled category
+  tts[tts$TissueID=='MAP03077_0000_01_01', 'broadTissue'] = 'AD'
 
   # Eliot's data set
   tts$SlideID = sc$SlideID[match(tts$TissueID, sc$TissueID)]

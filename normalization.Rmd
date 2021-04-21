@@ -119,7 +119,6 @@ atl = atl[ which(atl$adenSSLcrc!='CRC'),]
 ## Image normalization
 
 ```{r normalize, eval=TRUE, fig.height=14, fig.width=10}
-
 var = cellvars[8]
 # choose a subset for testing
 ss = atl[sample(nrow(atl), 200000),]
@@ -150,33 +149,6 @@ by(ss, ss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var])); hist(x[x[,v
 refmean = exp(countCoefs)
 
 
-
-# gamma normalization in the nonzero values
-nss = ss[which(ss[,var]!=0),]
-form = as.formula(paste(var, '~ adenSSLcrc + SlideID'))
-nss$X = model.matrix(form, data=nss)
-nss$X = nss$X[, grep(paste(fs, collapse='|'), colnames(nss$X), invert=TRUE, value=TRUE)]
-
-# doesn't fit very well
-#gammaConstantVar = glm(as.formula(paste(var, '~ -1 + X')), data=nss, family=Gamma('log'))
-# allows both gamma parameters to vary
-library(dglm)
-#gammaVarVar = dglm(as.formula(paste(var, '~ -1 + X')), as.formula(paste(var, '~ -1 + X')), data = nss, family=Gamma('log'))
-#lognormalConstantVar = lm(as.formula(paste('log(', var, ')', '~ -1 + X')), data = nss)
-lognormal = dglm(as.formula(paste('log(', var, ')',  '~ -1 + X')), as.formula(paste(var, '~ -1 + X')),data = nss, family = gaussian())
-
-
-### FOR GAMMA
-# get parameters
-gammaCoefs = coef(gammaConstantVar)
-nss$means = exp(nss$X %*% gammaCoefs)
-disp = summary(gammaConstantVar)$dispersion
-# plot the fit to the data in each slide
-# for gamma
-# formulas here: https://stats.stackexchange.com/questions/247624/dispersion-parameter-for-gamma-family
-layout(matrix(1:35, ncol=5, byrow=TRUE))
-invisible(by(nss, nss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var])); hist(x[x[,var]>0,var], prob=TRUE, main=x$SlideID[1]); points(xc, dgamma(xc, shape=disp, rate=1/x$means[1]/disp), type='l') }))
-
 ### For Log Normal
 lnCoefs = coef(lognormal)
 nss$lnMeans = nss$X %*% lnCoefs
@@ -188,7 +160,9 @@ invisible(by(nss, nss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var]));
 
 
 
-```{r applyNormalization, eval=FALSE}
+
+
+```{r applyNormalization, eval=TRUE}
 # log transform
 temp = atl[,cellvars]
 ### COMMENT OUT TO NOT TRANSFORM THE DATA
@@ -209,9 +183,9 @@ atl = as.data.frame(do.call(rbind, by(atl, atl$SlideID, function(data){
   data[,paste0('normed_', cellvars)] = res
   data
 }) ))
-#atl[,paste0('normed_', cellvars)] = apply(atl[,paste0('normed_', cellvars)], 2, function(x){ans=x+min(x,na.rm=TRUE)+log10(2); ifelse(is.na(ans), 0, ans)})
+atl[,paste0('normed_', cellvars)] = apply(atl[,paste0('normed_', cellvars)], 2, function(x){ans=x+min(x,na.rm=TRUE)+log10(2); ifelse(is.na(ans), 0, ans)})
 
 # plot the normalized data
-
-
 ```
+
+

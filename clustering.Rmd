@@ -93,15 +93,14 @@ EBmean = function(mu, sigma, mu0, sigma0, pz, ns){
 datafile = '/media/disk2/atlas_mxif/colon_map_20201209.rds'
 atl = readRDS(datafile)
 cellvars = grep('Median_Cell', names(atl), value=TRUE)
-# subset out these markers that did not have
+# subset out these markers that have missing data
 cellvars = cellvars[ - which(cellvars %in% c('Median_Cell_CD45B', 'Median_Cell_GACTIN', 'Median_Cell_PDL1', 'Median_Cell_CD45', 'Median_Cell_DAPI') )]
 
 # remove cells not in the tumor region
 atl = atl[ which(atl$Tumor>0), ]
-hist(atl$Tumor)
+
 # screen out duplicates due to FOV overlap. Eliot did this with later versions of the data, still some duplicates.
 #atl = atl[ which(!duplicated(atl[,cellvars])),]
-slideIDs = unique(atl$SlideID)
 atl = as.data.frame(atl)
 
 tts = read.csv('../TissueSubTypes Colon Map.csv')
@@ -113,12 +112,13 @@ atl$adenSSLcrc = ifelse(atl$tissueSubType %in% c('Tub', 'TV'), 'adenoma',
                                ifelse(atl$tissueSubType %in% c('CRC'), 'CRC', NA )) )
 # subset to non crc samples
 atl = atl[ which(atl$adenSSLcrc!='CRC'),]
+slideIDs = unique(atl$SlideID)
 ```
 
 
 ## Image normalization
 
-```{r normalize, eval=TRUE, fig.height=14, fig.width=10}
+```{r normalize, eval=FALSE, fig.height=14, fig.width=10}
 
 var = cellvars[8]
 # choose a subset for testing
@@ -188,7 +188,7 @@ invisible(by(nss, nss$SlideID, function(x){ xc= seq(min(x[,var]), max(x[,var]));
 
 
 
-```{r applyTransformation, eval=FALSE}
+```{r applyTransformation, eval=TRUE}
 # log transform
 temp = atl[,cellvars]
 ### COMMENT OUT TO NOT TRANSFORM THE DATA
@@ -216,8 +216,6 @@ atl = as.data.frame(do.call(rbind, by(atl, atl$SlideID, function(data){
 
 ```
 
-
-
 ## Data descriptives
 
 ### Histograms
@@ -227,17 +225,38 @@ This is a histogram of the data before normalization.
 ```{r histBeforeTransform, fig.width=15, fig.height=18, eval=TRUE}
 transpcols = col2rgb(cols)
 transpcols = rgb(transpcols[1,], transpcols[2,], transpcols[3,], maxColorValue = 255, alpha = 127)
-layout(matrix(1:30, nrow=6, byrow=TRUE))
+
 #layout(matrix(1:8, nrow=2, byrow=TRUE))
-invisible(sapply(cellvars,
+histvars = paste0('Median_Cell_', c('CD3D', 'CD8', 'CD4') )
+invisible(sapply(histvars,
                function(cellvar){
+                 layout(matrix(1:30, nrow=6, byrow=TRUE))
                  histinfo = hist(atl[,cellvar], plot=FALSE)
-                 hist(atl[atl$SlideID==slideIDs[1],cellvar], breaks=histinfo$breaks, col=transpcols[1], border=NA, main=cellvar, xlab=cellvar, probability = TRUE, ylim=c(0,3)) #main=slideIDs[1]
+                 hist(atl[atl$SlideID==slideIDs[1],cellvar], breaks=histinfo$breaks, col=transpcols[1], border=NA, xlab=cellvar, probability = TRUE, ylim=c(0,3), main=slideIDs[1])#, main=cellvar) #
                  sapply(2:length(slideIDs), function(ind){
-                   hist(atl[ atl$SlideID==slideIDs[ind],cellvar], breaks = histinfo$breaks, border=NA, probability=TRUE, col=transpcols[ind], main=slideIDs[ind], xlab=cellvar, add=TRUE)
+                   hist(atl[ atl$SlideID==slideIDs[ind],cellvar], ylim=c(0,3), breaks = histinfo$breaks, border=NA, probability=TRUE, col=transpcols[ind], main=slideIDs[ind], xlab=cellvar)#, add=TRUE)
                  } )
-                 #mtext(cellvar, outer = TRUE, cex=1.5 )
-                 #dev.off()
+                 mtext(cellvar, outer = TRUE, cex=1.5 )
+                 #dev.new()
+               }))
+```
+
+
+Histograms in epithelial and stromal tissue classes.
+```{r histEpi, fig.width=15, fig.height=18, eval=TRUE}
+invisible(sapply(histvars,
+               function(cellvar){
+                 layout(matrix(1:30, nrow=6, byrow=TRUE))
+                 histinfo = hist(atl[,cellvar], plot=FALSE)
+                 hist(atl[atl$SlideID==slideIDs[1] & atl$epi==1,cellvar], breaks=histinfo$breaks, col=transpcols[1], border=NA, xlab=cellvar, probability = TRUE, ylim=c(0,3), main=slideIDs[1])#, main=cellvar) #
+                 hist(atl[ atl$SlideID==slideIDs[1] & atl$epi==0,cellvar], ylim=c(0,3), breaks = histinfo$breaks, border=NA, probability=TRUE, col=transpcols[2], main=slideIDs[1], xlab=cellvar, add=TRUE)
+                 legend('topleft', legend=c('epithelium', 'stroma'), fill=transpcols[1:2])
+                 sapply(2:length(slideIDs), function(ind){
+                   hist(atl[ atl$SlideID==slideIDs[ind]& atl$epi==0,cellvar], ylim=c(0,3), breaks = histinfo$breaks, border=NA, probability=TRUE, col=transpcols[1], main=slideIDs[ind], xlab=cellvar)#, add=TRUE)
+                   hist(atl[ atl$SlideID==slideIDs[ind]& atl$epi==1,cellvar], ylim=c(0,3), breaks = histinfo$breaks, border=NA, probability=TRUE, col=transpcols[2], main=slideIDs[ind], xlab=cellvar, add=TRUE)
+                 } )
+                 mtext(cellvar, outer = TRUE, cex=1.5 )
+                 #dev.new()
                }))
 ```
 
@@ -407,7 +426,7 @@ This section fits the clustering model that is coded in table `markers1`.
 
 ```{r marginalMixture, message=FALSE, results='hide', fig.width=12, fig.height=12}
   #mcl = mclapply(slidedatas, function(data){, mc.cores = ncores )
-invisible(capture.output(mcl <-lapply(slidedatas, HCmulti, markers=markers1 )))
+invisible(capture.output(mcl <-lapply(slidedatas, HCmulti, markers=markers1)))
 #HCmulti(slidedatas[[1]], markers1)
 
 for(slideID in slideIDs){
@@ -416,6 +435,9 @@ for(slideID in slideIDs){
   }
   # computes the marginal probability of each cell class
   #if(markname=='markers1') slidedatas = lapply(slidedatas, function(slide){ slide[,paste0('marg_cl2_', markers$cl2)] = slide[,paste0('cl1_', markers$cl1)] * slide[, paste0('cl2_', markers$cl2)]; slide })
+lapply(mcl, function(model){
+  plotDensityMclustd(model[[1]], data=model[[1]]$data)
+  })
 ```
 
 ### Mclust in full data set
@@ -427,9 +449,6 @@ slidedata = do.call(rbind, slidedatas)
 mclfull = HCmulti(slidedata, markers=markers1[c(1,10),c('cl1', 'cl1markers', 'cl1markerValue')])
 slidedata[,paste0('mclfull_', colnames(mclfull[[1]]$z))] = predict(mclfull[[1]], newdata=slidedata[, colnames(mclfull[[1]]$data)])$z
 
-mclfull = HCmulti(slidedata, markers=markersnormed[c(1,10),c('cl1', 'cl1markers', 'cl1markerValue')])
-slidedata[,paste0('mclfullnormed_', colnames(mclfull[[1]]$z))] = predict(mclfull[[1]], newdata=slidedata[, colnames(mclfull[[1]]$data)])$z
-
 slidedatas = lapply(slideIDs, function(slideID){
     slidedata[slidedata$SlideID==slideID,]
   })
@@ -438,29 +457,50 @@ gc()
 names(slidedatas) = slideIDs
 ```
 
+
+
 Running clustering by CD8 and CD4
 
-```{r cd4cd8labels}
-cd8cl = cd4cl = list()
+```{r cd4cd8labels, fig.width=15, fig.height=18, eval=TRUE}
+cd8cl = cd4cl = cd3cl = list()
+layout(matrix(1:30, nrow=6, byrow=TRUE))
 for(slideID in slideIDs){
+  
+  #inds = slidedata[,'Median_Cell_CD3D']>0
+  #invisible(capture.output(cd3cl[[slideID]] <- mixtools::normalmixEM(slidedata[inds,'Median_Cell_CD3D']) ))
+  #plot(cd3cl[[slideID]], whichplots=2)
+  #slidedatas[[slideID]][,'mcl_cd3'] = predict(cd3cl[[slideID]], newdata=slidedata[,'Median_Cell_CD3D'])$z[,which.max(cd3cl[[slideID]]$parameters$mean)]
+  #slidedatas[[slideID]][!inds ,'mcl_cd3'] = 0
+  
   slidedata = slidedatas[[slideID]]
   inds = slidedata[,'Median_Cell_CD4']>0
   invisible(capture.output(cd4cl[[slideID]] <- Mclust(slidedata[inds,'Median_Cell_CD4'], G=2, modelNames = 'E')))
   slidedatas[[slideID]][,'mcl_cd4'] = predict(cd4cl[[slideID]], newdata=slidedata[,'Median_Cell_CD4'])$z[,which.max(cd4cl[[slideID]]$parameters$mean)]
   slidedatas[[slideID]][!inds ,'mcl_cd4'] = 0
   
-  slidedata = slidedatas[[slideID]]
+  # plot cd4 results
+  hist(slidedata[inds,'Median_Cell_CD4'], probability = TRUE)
+  rang = seq(min(slidedata[inds,'Median_Cell_CD4']), max(slidedata[inds,'Median_Cell_CD4']), length.out=100)
+  points(rang, dnorm(rang, mean=cd4cl[[slideID]]$parameters$mean[1], sd=sqrt(cd4cl[[slideID]]$parameters$variance$sigmasq[1]) )*cd4cl[[slideID]]$parameters$pro[1], type='l', col=cols[1])
+  points(rang, dnorm(rang, mean=cd4cl[[slideID]]$parameters$mean[2], sd=sqrt(cd4cl[[slideID]]$parameters$variance$sigmasq[1]) )*cd4cl[[slideID]]$parameters$pro[2], type='l', col=cols[2])
+  
   inds = slidedata[,'Median_Cell_CD8']>0
   invisible(capture.output(cd4cl[[slideID]] <- Mclust(slidedata[inds,'Median_Cell_CD8'], G=2, modelNames = 'E')))
   slidedatas[[slideID]][,'mcl_cd8'] = predict(cd4cl[[slideID]], newdata=slidedata[,'Median_Cell_CD8'])$z[,which.max(cd4cl[[slideID]]$parameters$mean)]
   slidedatas[[slideID]][!inds ,'mcl_cd8'] = 0
+  
+  # plot cd8 results
+  hist(slidedata[inds,'Median_Cell_CD8'], probability = TRUE)
+  rang = seq(min(slidedata[inds,'Median_Cell_CD8']), max(slidedata[inds,'Median_Cell_CD8']), length.out=100)
+  points(rang, dnorm(rang, mean=cd4cl[[slideID]]$parameters$mean[1], sd=sqrt(cd4cl[[slideID]]$parameters$variance$sigmasq[1]) )*cd4cl[[slideID]]$parameters$pro[1], type='l', col=cols[1])
+  points(rang, dnorm(rang, mean=cd4cl[[slideID]]$parameters$mean[2], sd=sqrt(cd4cl[[slideID]]$parameters$variance$sigmasq[1]) )*cd4cl[[slideID]]$parameters$pro[2], type='l', col=cols[2])
 }
 ```
 
 
 ```{r writeoutLabels, eval=TRUE, cache=FALSE}
 outdata = as.data.frame(do.call(rbind, slidedatas))
-outdata$stromal_cells = ifelse(outdata$mcl_stroma>0.95, 1, 0)
+outdata$stromal_cells = ifelse(outdata$mcl_stroma>0.95, 1, ifelse(outdata$mcl_stroma<0.05, 0, NA) )
 saveRDS(outdata, file='sc_data_for_ruby.rds')
 rm(outdata)
 ```
@@ -468,7 +508,7 @@ rm(outdata)
 
 ### Trying to see if NMF works better
 
-```{r nmf, eval=TRUE}
+```{r nmf, eval=FALSE}
 slidedatas = mclapply(slidedatas, function(slidedata){
   eps = 10e-8
   x = as.matrix(slidedata[, unique(unlist(markers1$cl1markers))])
@@ -504,7 +544,7 @@ slidedatas = mclapply(slidedatas, function(slidedata){
 
 ### NMF in full data set
 
-```{r combinedClusteringNMF, eval=TRUE}
+```{r combinedClusteringNMF, eval=FALSE}
 # Mclust parameters set above
 
 slidedata = do.call(rbind, slidedatas)
@@ -604,26 +644,28 @@ for(slideID in slideIDs){
 }
 ```
 
+### Histograms
 
 
-#### Scatterplot matrices with labels
+### Scatterplot matrices with labels
 
-```{r plotMatrices, fig.width=12, fig.height=12, eval=TRUE}
-# invisible(lapply(slidedatas, function(slidedata, markers){
-#   slideID = slidedata$SlideID[1]
-#   cellvars = unique(unlist(markers$cl1markers))
-#   cellvarsstroma = unique(unlist(markers$cl2markers[ markers$cl1=='stroma']))
-#   cl1labels = c('epistr_label', 'mclfull_label', 'mclfullnormed_label')
-#   cl2labels = c('stroma_label', 'nmf_cl2', 'fullnmf_cl2')
-#   
-#   for(ind in 1:3){
-#     cl1lab = cl1labels[ind]
-#     #cl2lab = cl2labels[ind]
-#     
-#     colvec = as.factor(slidedata[,cl1lab])
-#     pairs(slidedata[,cellvars], panel = function(x,y) points(x,y, col=transpcols[colvec], pch=21), main=paste(slideID, cl1lab), label.pos=.75, text.panel=function(x,y, labels, cex, font){legend('bottomleft', legend=levels(colvec), fill=cols[1:nlevels(colvec)]); text(x,y, labels = labels)} )
-#   }
-# }, markers=markers1) )
+
+```{r plotMatrices, fig.width=12, fig.height=12, eval=FALSE}
+ invisible(lapply(slidedatas, function(slidedata, markers){
+   slideID = slidedata$SlideID[1]
+   cellvars = unique(unlist(markers$cl1markers))
+   cellvarsstroma = unique(unlist(markers$cl2markers[ markers$cl1=='stroma']))
+   cl1labels = c('epistr_label', 'mclfull_label', 'mclfullnormed_label')
+   cl2labels = c('stroma_label', 'nmf_cl2', 'fullnmf_cl2')
+   
+   for(ind in 1:3){
+     cl1lab = cl1labels[ind]
+     #cl2lab = cl2labels[ind]
+     
+     colvec = as.factor(slidedata[,cl1lab])
+     pairs(slidedata[,cellvars], panel = function(x,y) points(x,y, col=transpcols[colvec], pch=21), main=paste(slideID, cl1lab), label.pos=.75, text.panel=function(x,y, labels, cex, font){legend('bottomleft', legend=levels(colvec), fill=cols[1:nlevels(colvec)]); text(x,y, labels = labels)} )
+   }
+ }, markers=markers1) )
 
 
 

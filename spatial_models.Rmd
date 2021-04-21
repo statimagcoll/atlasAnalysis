@@ -40,12 +40,12 @@ colscale = c('#f0f9e8', '#ccebc5', '#a8ddb5','#7bccc4','#4eb3d3', '#2b8cbe', '#0
 
 ncores = 24
 
-sc = readRDS('clustering/sc_data_for_ruby.rds')
+sc = readRDS('../sc_data_for_ruby.rdata')
 sc[,"Slide_Region"]<- paste(sc$SlideID,sc$region, sep="_") #sprintf('%s\n%s',sc$SlideID,sc$region)
 
 
 # get distance to nearest epithelial cell
-sc <- do.call(rbind, by(sc,sc$Slide_Region,function(df){df$dist = NA; df$dist[df$stromal_cells==1] =FNN::get.knnx(df[df$epi==1,c('x', 'y')],df[df$stromal_cells==1,c('x', 'y')], k=1)$nn.dist; df}))
+sc <- do.call(rbind, by(sc,sc$Slide_Region,function(df){df$dist = NA; df$dist[df$cell_label=='stroma'] =FNN::get.knnx(df[df$epi==1,c('x', 'y')],df[df$cell_label=='stroma',c('x', 'y')], k=1)$nn.dist; df}))
 
 sc$cd4 = ifelse(sc$mcl_cd4>0.9, 1, 0)
 sc$cd8 = ifelse(sc$mcl_cd8>0.9, 1, 0)
@@ -61,7 +61,7 @@ sc = sc[!is.na(sc[, 'adenSSLcrc']),]
 # get signed distance to the boundary
 
 
-subset = sc[sc[,"stromal_cells"]==1,]
+subset = sc[sc[,"cell_label"]=='stroma',]
 rownames(subset) = subset$ID = 1:nrow(subset)
 # To log transform without zeros add in minimum nonzero distance os is the minimum offset
 subsets = by(subset, subset$Slide_Region, function(x) x)
@@ -525,6 +525,7 @@ for(var in vars){
   legend('topright', legend = levels(fits$adenSSLcrc), fill=cols[1:nlevels(fits$adenSSLcrc)], bty='n')
   }))
 ```
+
 
 
 
