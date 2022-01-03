@@ -23,6 +23,6 @@ loadImagingData = function(slideRegionList, markers, adjustedImageDir='/media/di
   #sr[,'epiMask'] = file.path('/media/disk2/atlas_mxif/T_cell_quantification/Images/', sr$Slide, sprintf('%s_%s_epi_mask.png', sr$Slide, sr$region) )
   #sr[,'strMask'] = file.path('/media/disk2/atlas_mxif/T_cell_quantification/Images/', sr$Slide, sprintf('%s_%s_stroma_mask.png', sr$Slide, sr$region) )
   
-  sr[,markers][!apply(sr[,markers], 2, file.exists)] = NA
+  sr[,c(markers, 'tumorMask')][!apply(sr[,c(markers, 'tumorMask')], 2, file.exists)] = NA
   sr
 }
