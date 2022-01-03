@@ -16,10 +16,10 @@ loadImagingData = function(slideRegionList, markers, adjustedImageDir='/media/di
   
   #idVars = c('Slide', 'Region', 'slideRegion')
   #sr = threshold[!duplicated(threshold$slideRegion), idVars]
-  sr = data.frame(Slide_Region = slideRegionList, 'region'=gsub('.*_region_', 'region_', slideRegion), 'Slide'=gsub('_region.*', '', slideRegion))
-  sr[, markers ] = sapply(markers, function(marker) file.path(adjustedImageDir, sr$Slide, sprintf('%s_ADJ_%s.jpg', marker, sr$region) ) )
+  sr = data.frame(slide_region = slideRegionList, 'region'=gsub('.*_region_', 'region_', slideRegionList), 'slide'=gsub('_region.*', '', slideRegionList))
+  sr[, markers ] = sapply(markers, function(marker) file.path(adjustedImageDir, sr$slide, sprintf('%s_ADJ_%s.jpg', marker, sr$region) ) )
   #sr[,'mask'] = file.path('/media/disk2/atlas_mxif/T_cell_quantification/Images/Adjusted Images', sr$Slide, sprintf('%s_%02d_TISSUE_MASK.tif', sr$Slide, as.numeric(gsub('region_', '', sr$region)) ) )
-  sr[,'tumorMask'] = file.path(maskdir, sr$Slide, sprintf('Tumor_mask_%s.jpg', sr$region) )
+  sr[,'tumorMask'] = file.path(maskdir, sr$slide, sprintf('Tumor_mask_%s.jpg', sr$region) )
   #sr[,'epiMask'] = file.path('/media/disk2/atlas_mxif/T_cell_quantification/Images/', sr$Slide, sprintf('%s_%s_epi_mask.png', sr$Slide, sr$region) )
   #sr[,'strMask'] = file.path('/media/disk2/atlas_mxif/T_cell_quantification/Images/', sr$Slide, sprintf('%s_%s_stroma_mask.png', sr$Slide, sr$region) )
   
