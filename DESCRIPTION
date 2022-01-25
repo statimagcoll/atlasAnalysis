@@ -9,6 +9,7 @@ Encoding: UTF-8
 LazyData: true
 Collate: 
   'loadQuantifiedPCA.R'
+  'loadImagingData.R'
   'hierarchical_clustering.R'
 Imports:
   combinat,
