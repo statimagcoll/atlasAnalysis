@@ -55,13 +55,13 @@ downsample = function(img, outimg, mask=NULL, fact=4, fun='mean'){
 
 
 # Gaussian smoothing on the log scale. Divides by mean, applies transformation first, and then untransforms afterward.
-# might not be the best approach. Would be interested just to see smoothing on raw images
+# might not be the best approach. Can adjust arguments to do smoothing on the raw scale without a transformation.
 gaussSmooth = function(img, outimg, mask, maskThr, sigma=5, transform=log10, invtransform=function(x) 10^x, offset=1/2, divmean = function(img){ cellStats(img, stat = 'mean')} ){
   message(basename(img))
   ans = raster(img)
   maskimg = raster(mask)
   values(ans)[values(maskimg)<=maskThr] = NA
-  values(ans) = transform(values(ans)/divmean + offset)
+  values(ans) = transform(values(ans)/divmean(ans) + offset)
   if(sigma>0){
     # set NA values outside mask
     #ans = focal(ans, focalWeight(ans, sigma, type='Gauss'), filename=outimg, overwrite=TRUE, fun=)
@@ -207,7 +207,7 @@ We need to get a mask from Joe that excludes regions where the tissue came off t
 
 # markers to use:
 # These are modifiable. location markers are used for clustering, so you can expand this to use more markers for clustering
-locationMarkers = c('PANCK', 'COLLAGEN', 'VIMENTIN', 'SOX9', 'NAKATPASE')
+locationMarkers = c('PANCK', 'COLLAGEN', 'VIMENTIN', 'SOX9', 'OLFM4', 'NAKATPASE', 'MUC2')
 immuneMarkers = c('CD3D', 'CD8', 'CD4', 'CD68')
 
 #combine the csv files
@@ -306,16 +306,18 @@ origmarkers = sr
 
 for(marker in c(allMarkers)){
   sr[,marker] = gsub('\\.tif$', '_downsampled.tif', origmarkers[,marker])
+  cat(marker, '\n')
   if(!all(file.exists(sr[ss,marker]))){
-    mcmapply(downsample, origmarkers[ss,marker], sr[ss,marker], MoreArgs=list(fact=fact), mc.cores = 2 )
+    mcmapply(downsample, origmarkers[ss,marker], sr[ss,marker], MoreArgs=list(fact=fact), mc.cores = 12 )
   }
 }
 
-# This downsamples using the model instead, which makes more sense for mask images.
+# This downsamples using the mode instead, which makes more sense for mask images.
 # downsample(origmarkers$epiMask[1], sr$epiMask[1], mask=origmarkers[1, 'mask'], fact=fact, fun='modal')
 # The mask argument is used, because some images were at a different resolution than the others, so I had to downsample some differently.
 for(marker in c('epiMask', 'strMask', 'mask', 'tumorMask', immunePosMarkers)){
   sr[,marker] = gsub('\\.png$|\\.tif$', '_downsampled.tif', origmarkers[,marker])
+  cat(marker, '\n')
   if(!all(file.exists(sr[ss,marker]))){
     message(marker)
     mcmapply(downsample, origmarkers[ss,marker], sr[ss,marker], mask=origmarkers[ss,'mask'], MoreArgs=list(fact=fact, fun='modal'), mc.cores = 40)
@@ -340,9 +342,11 @@ k = 4
 
 # Create file names for smoothed downsampled images
 slocationMarkers = paste(locationMarkers, 'smooth', sep="_")
+nslocationMarkers = paste(locationMarkers, 'norm_smooth', sep="_")
 #snormedMarkers = paste(normedMarkers, 'smooth', sep='_')
 simmuneMarkers = paste(immuneMarkers, 'smooth', sep="_")
 sr[,c(slocationMarkers, simmuneMarkers)] = apply(sr[,c(locationMarkers, immuneMarkers)], 2, function(x) gsub('\\.tif$', '_smoothed.tif', x) )
+sr[,c(nslocationMarkers)] = apply(sr[,locationMarkers], 2, function(x) gsub('\\.tif$', 'normed_smoothed.tif', x) )
 ```
 
 
@@ -461,14 +465,39 @@ So the pipeline is
 If this is the pipeline the code could be made more efficient.
 
 ```{r smoothing, eval=TRUE}
-  sigma=10
+sigma=50
 
 #gaussSmooth = function(img, outimg, mask, maskThr, sigma=5, transform=log10, invtransform=function(x) 10^x, offset=1/2, divmean = function(img){ cellStats(img, stat = 'mean')} )
 # smooth on the raw
 # still divides by the mean.
+#marker=locationMarkers[1]; gaussSmooth()
+
+### Code to look at smoothing kernel size
+  #img = sr[2,marker]; outimg=sr[2,paste(marker, 'smooth', sep="_")]; mask=sr[2,'mask']; maskThr=dapiThr; sigma=sigma; transform=function(x) x; invtransform = function(x) x; offset=0
+  # grayscale_colors <- gray.colors(100,            # number of different color levels 
+  #                               start = 0.0,    # how black (0) to go
+  #                               end = 1.0,      # how white (1) to go
+  #                               gamma = 2.2,    # correction between how a digital 
+  #                               # camera sees the world and how human eyes see it
+  #                               alpha = NULL)   #Null=colors are not transparent
+  # 
+  # kernel = ans; values(kernel) = 0;
+  # #values(ans)[is.na(values(ans))] = 0
+  # smk = focalWeight(ans, 50, type='circle')
+  # dim(smk)
+  # inds = ceiling(dim(kernel)/2)[1:2]
+  # kernel[ inds[1] + 1:nrow(smk), inds[2] + 1:nrow(smk)] = smk
+  # plot(stack(ans, kernel), col=grayscale_colors)
+  # st = brick(ans, kernel)
+  # plotRGB(st, r = 1, g = 2)
+  
 for(marker in c(locationMarkers)){
   message(marker)
-  invisible(mcmapply(gaussSmooth, sr[ss,marker], sr[ss,paste(marker, 'smooth', sep="_")], sr[ss,'mask'], MoreArgs=list(maskThr=dapiThr, sigma=sigma, transform=function(x) x, invtransform = function(x) x, offset=0), mc.cores = 6 ))
+  if(!all(file.exists(sr[ss,paste(marker, 'smooth', sep="_")]))){
+    #mcmapply(gaussSmooth, sr[ss,marker], sr[ss,paste(marker, 'smooth', sep="_")], sr[ss,'DAPI'], MoreArgs=list(maskThr=dapiThr, sigma=sigma, transform=function(x) x, invtransform = function(x) x, offset=0), mc.cores = 20 )
+    mapply(gaussSmooth, sr[ss,marker], sr[ss,paste(marker, 'norm_smooth', sep="_")], sr[ss,'DAPI'], MoreArgs=list(maskThr=dapiThr, sigma=sigma, transform=function(x) x, invtransform = function(x) x, offset=0))
+    mapply(gaussSmooth, sr[ss,marker], sr[ss,paste(marker, 'smooth', sep="_")], sr[ss,'DAPI'], MoreArgs=list(maskThr=dapiThr, sigma=sigma, transform=function(x) x, invtransform = function(x) x, offset=0, divmean=function(x) 1))
+  }
 }
 
 
@@ -507,7 +536,7 @@ This first chunk runs the k-means on the log transformed data.
 It then uses that model to assign the labels to all of the pixels and writes them out as the `locationLabel` images.
 ```{r kmeans, eval=TRUE}
 # extract the smooth un-normalized data from the images
-kMeansMarkers = slocationMarkers
+kMeansMarkers = nslocationMarkers
 kmeansData = subsampImgs(sr[ss, kMeansMarkers], sr[ss, 'mask'], maskThr = dapiThr, subsamp = fact)
 
 
@@ -527,6 +556,7 @@ outimgs = sapply(ss, function(rind){ message(sr$slideRegion[rind]); labelImage(u
 This second chunk runs k-means on the untransformed data and then assigns the values to the `locationLabelUntransformed` images.
 ```{r kmeansUntransformed, eval=FALSE}
 # extract the smooth un-normalized data from the images
+kMeansMarkers = slocationMarkers
 kmeansUntransformedData = subsampImgs(sr[ss, kMeansMarkers], sr[ss, 'mask'], maskThr = dapiThr, subsamp = fact, offset=0, transform = function(x) x)
 
 

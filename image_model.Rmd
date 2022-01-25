@@ -1,0 +1,659 @@
+---
+title: "Image Level Analysis"
+author: "Simon Vandekar"
+date: "2/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::knit_hooks$set(GPs=function(before, options, envir){
+  if (before){
+    cex=1.5
+    par(mgp=c(1.7,.7,0), lwd=1.5, lend=2,
+        cex.lab=0.8*cex, cex.axis=0.8*cex, cex.main=1*cex,
+        mar=c(2.8,1.8,2,0), bty='l', oma=c(0,0,2,0))}
+})
+knitr::opts_chunk$set(echo = TRUE, fig.height = 5, fig.width = 5, GPs=TRUE, cache=TRUE, cache.lazy = FALSE)
+
+library(raster)
+library(png)
+library(parallel)
+library(class)
+library(fda)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(sjPlot)
+set.seed(1234)
+
+```
+
+## Functions
+
+```{r functions, echo=FALSE}
+# need to check that this does the same thing as Moran function when NAs are present
+# reference: https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0126158
+moran = function (x, y=NULL, atlas, w = matrix(c(1, 1, 1, 1, 0, 1, 1, 1, 1), 3, 3)) 
+{
+    if(is.null(y)) y = x
+    if(is.character(x)) x = raster(x)
+    if(is.character(y)) y = raster(y)
+    if(is.character(atlas)) atlas = raster(atlas)
+    z <- x - cellStats(x, mean)
+    z2 <- y - cellStats(y, mean)
+    wZiZj <- focal(z2, w = w, fun = "sum", na.rm = TRUE, pad = TRUE)
+    wZiZj <- wZiZj * z
+    wZiZj <- c(by(values(wZiZj), values(atlas), sum))
+    zsq <- sqrt(c(by(values(z^2), values(atlas), sum)))
+    # ineffecient if x=y
+    z2sq <- sqrt(c(by(values(z2^2), values(atlas), sum)))
+    n <- table(values(atlas)) - c(by(values(is.na(z) | is.na(z2)), values(atlas), sum)) # ncell(z) - cellStats(is.na(z) | is.na(z2), "sum")
+    values(z) = as.numeric(!is.na(values(z)) & !is.na(values(z2)))
+    W <- c(by(values(focal(z, w = w, fun = "sum", na.rm = TRUE, pad = TRUE)), values(atlas), sum)) #cellStats(focal(z, w = w, fun = "sum", na.rm = TRUE, pad = TRUE), sum)
+    NS0 <- n/W
+    mI <- NS0 * wZiZj/zsq/z2sq
+    return(mI)
+}
+
+
+# @param imgnames tif image names for markers used in the clustering
+# @param centers kmeans centroid coordinates, with columns in the same order as imgnames
+# @param weights Multiplicative weights applied in model fitting
+# @param outname filename for output image
+labelImage = function(imgnames, centers, weights, mask, maskThr=0, outname, transform = log10, offset=1/2){
+  imgs = stack(imgnames)
+  mask = raster(mask)
+  values(imgs)[ values(mask)<=maskThr ] = NA
+  #mins = apply(values(imgs), 2, function(v){min(v[v>0], na.rm=TRUE)})
+  #values(imgs) = sweep(values(imgs), 2, mins, FUN="+")
+  values(imgs) = sweep(values(imgs), 2, colMeans(values(imgs), na.rm=TRUE), FUN='/') + offset
+  imgout = calc(imgs, fun = function(vec){
+    nas = apply(is.na(vec), 1, any)
+    ans = rep(0, nrow(vec))
+    vec = transform(vec[!nas,])
+    if(nrow(vec)!=0){
+      ans[!nas] = as.numeric(as.character(c(knn1(centers, test=sweep(vec, 2, weights, '*'), cl=1:nrow(centers)) ) ))
+    }
+    return(ans)
+  }, filename=outname, overwrite=TRUE)
+  return(outname)
+}
+
+
+snr = function(imgname, mask, maskThr=0, outname, transform = log10, offset=1/2){
+  imgs = raster(imgname)
+  mask = raster(mask)
+  values(imgs)[ values(mask)<=maskThr ] = NA
+  mu = cellStats(imgs, 'mean')
+  sigma = cellStats(imgs, stat='sd')
+  
+  #values(imgs) = transform(values(imgs)/mu+offset)
+  #snrTransform = cellStats(imgs, 'mean')/cellStats(imgs, 'sd')
+  c(mu=mu, sigma=sigma)
+}
+
+
+
+
+weighted.mean.fd = function (x, w, ...) 
+{
+    if (!inherits(x, "fd")) 
+        stop("'x' is not of class 'fd'")
+    coef <- x$coefs
+    coefd <- dim(coef)
+    ndim <- length(coefd)
+    basisobj <- x$basis
+    nbasis <- basisobj$nbasis
+    dropind <- basisobj$dropind
+    ndropind <- length(dropind)
+    if (ndim == 2) {
+        coefmean <- matrix(apply(coef, 1, weighted.mean, w=w), nbasis - ndropind, 
+            1)
+        coefnames <- list(dimnames(coef)[[1]], "Mean")
+    }
+    else {
+        nvar <- coefd[3]
+        coefmean <- array(0, c(coefd[1], 1, nvar))
+        for (j in 1:nvar) coefmean[, 1, j] <- apply(coef[, , 
+            j], 1, weighted.mean, w=w)
+        coefnames <- list(dimnames(coef)[[1]], "Mean", dimnames(coef)[[3]])
+    }
+    fdnames <- x$fdnames
+    fdnames[[2]] <- "mean"
+    fdnames[[3]] <- paste("mean", fdnames[[3]])
+    meanfd <- fd(coefmean, basisobj, fdnames)
+    meanfd
+}
+
+
+# Function to get subset of data from the images
+#' @param imgs character vector, matrix, or data frame of images to load. Rows are slides/regions/subjects; columns are images.
+#' @param masks character vector of masks defining where there is tissue in the image
+#' @param maskThr numeric noninclusive lower threshold for mask
+#' @param subsamp integer specifying the factor to subsample each dimension of the image.
+#' @return A data frame with the subsample of imaging data for all of the images. Images are identified by the rownames of the imgs variable.
+subsampImgs = function(imgs, masks, maskThr=0, subsamp=4, transform=log10, offset=1/2 ){
+  imgs = as.data.frame(imgs)
+  ss = 1:nrow(imgs)
+  imgnames = names(imgs)
+  # samples every 4th downsampled voxel from the DAPI
+  subsamp = rep(c(FALSE, TRUE), c(subsamp-1, 1))
+  
+  locData = do.call(rbind, lapply(ss, function(rind){
+    message(rownames(imgs)[rind])
+    # get DAPI for this slideRegion
+    img = raster(masks[rind])
+    
+    arrIndsImg = img
+    values(arrIndsImg) = outer(rep(subsamp, length.out=nrow(img) ), rep(subsamp, length.out=ncol(img) ), FUN = "&")
+    # indsImg selects the pixels that will be used to build the model
+    indsImg = (img>maskThr & arrIndsImg)
+    rm(arrIndsImg, img)
+    
+    # for channel
+    names(imgnames) = imgnames
+    res = as.data.frame(do.call(cbind, lapply(imgnames, function(marker){
+      # gets row for this subject
+      img = raster(imgs[rind, marker])
+      
+      # select target voxels
+      res = values(img)[ values(indsImg) ]
+      res = transform(res + offset) #/mean(res)
+    } )))
+    # set NAs
+    res[ , imgnames[which(!imgnames %in% names(res)) ] ] = NA
+    # reorder them to be the original
+    res = res[ ,imgnames]
+    # return result for this slideRegion
+    res[,'ID'] = rownames(imgs)[rind]
+    res
+  }) ) # combine them all into one data frame
+}
+
+
+
+
+#' Function to estimate warping functions for normalization
+#' @param data data frame or matrix where rows are multiple observations from each subject
+#' @param subjectID vector indicating subjectID assignment for data in data
+#' @param nbasisHist integer dimension of basis to approximate the histogram
+#' @param nbasisNorm integer dimension of basis for the normalization function
+#' @param norderHist integer order of basis for approximating the histogram
+#' @param norderNorm integer order of basis for the normalization function
+#' @param len argument to density
+#' @return A list of register.fd outputs, one for each channel
+#' @import fda
+fdaEstimate = function(data, subjectID,
+                        nbasisHist = 20,
+                        norderHist=4,
+                        nbasisNorm=2,
+                        norderNorm=2,
+                       offset=0.0001,
+                       transform = log10,
+                       rang=transform(c(0,255)+offset),
+                        len=512){
+
+  regDenss=lapply(colnames(data), function(var){
+  x = split(data[,var],subjectID) ## split data by slide
+  #rang = range(data[ which(data[,var]!=0),var]) ## get range of values != 0
+  #if(rang[1] < 0){rang[1] = 0}
+  argvals = seq(rang[1],rang[2],len=len) ## get evenly spaced values for computation later
+
+  w = sapply(x, function(y) sum(y>transform(offset)) )
+  ## ---- density of var
+  densY = sapply(1:length(x), function(i){ ## calculate density for each nonzero value across slides
+    density(x[[i]][ which(x[[i]]>rang[1]) ],
+            from=rang[1],
+            to=rang[2],
+            n=len,
+            na.rm=TRUE)$y
+  })
+
+  ## ---- setup basis functions
+  fdobj_basis = create.bspline.basis(rangeval = rang, norder = norderHist,nbasis=nbasisHist) ## create bspline basis with cubic splines (approx hist)
+  wbasis = create.bspline.basis(rangeval = rang, norder = norderNorm,nbasis=nbasisNorm) ## create bspline basis with linear (transform data)
+  Wfd0   <- fd(matrix(0,wbasis$nbasis,1),wbasis) ## setup `fda` object
+  WfdPar <- fdPar(Wfd0, Lfdobj = int2Lfd(0),lambda = 0) ## setup roughness for `fda` object
+
+  ## ---- initial registration (warp functions)
+  fdobj   <- smooth.basis(argvals, densY, fdobj_basis, fdnames = c("x", "samples", "density"))$fd ## estimates the densities using bsplines
+  #regDens = register.fd(yfd=fdobj, WfdParobj = WfdPar,dbglev = 0,crit=1) ## register densities using roughness penalties
+
+  ## ---- reverse registration (inverse warp functions)
+  # y0s = mean.fd(fdobj) ## get mean curve from registration
+  y0s = weighted.mean.fd(fdobj, w=w)
+  y0s$coefs = do.call(cbind, rep(list(y0s$coefs), ncol(fdobj$coefs)))
+  ## crit=2: broken in internal fda code
+  regDens = register.fd(y0fd = fdobj, yfd=y0s,WfdParobj = WfdPar, dbglev = 0,crit=1) ## register to get actual warping functions back to real data
+  
+  colnames(regDens$warpfd$coefs) = names(x)
+  regDens
+  } )
+  names(regDenss) = colnames(data)
+  return(regDenss)
+}
+
+
+#' Function to normalize the imaging data
+#' @param data data frame or matrix where rows are multiple observations from each subject
+#' @param subjectID vector indicating subjectID assignment for data in data
+#' @param nbasisHist integer dimension of basis to approximate the histogram
+#' @param nbasisNorm integer dimension of basis for the normalization function
+#' @param norderHist integer order of basis for approximating the histogram
+#' @param norderNorm integer order of basis for the normalization function
+#' @param len argument to density
+#' @param ... optional named arguments passed to fdaEstimate
+#' @return A list of register.fd outputs, one for each channel
+fdaNormalize = function(data, dataSubjectID, imgs, imgSubjectID, outimgs, masks, maskThr=0, nit=1, transform=log10, untransform=function(y) 10^(y), offset=0.0001, ...){
+
+  nchannel = ncol(data)
+  nsubjects = nrow(imgs)
+    
+  if(length(imgSubjectID)!=nrow(imgs) | nchannel!=ncol(imgs))
+    stop('number of subjects and channels in imgs must match subjectID and data.')
+  for(it in 1:nit){
+    regFuncs = fdaEstimate(data, dataSubjectID, offset=offset, ...)
+  
+  normed = do.call(cbind, lapply(1:nchannel, function(var){
+    x = split(data[,var], dataSubjectID)
+    regDens = regFuncs[[var]]
+  # apply registration to the data
+  xp = lapply(1:length(x), ## register each slide using inverse warp functions
+             function(ind){
+               out = rep(transform(offset), length(x[[ind]]))
+               out[ x[[ind]]>transform(offset) ] = eval.fd(x[[ind]][x[[ind]]>transform(offset)], regDens$warpfd[ind]);
+               out})
+  out = data.frame(unlist(xp))
+  names(out) = colnames(data)[var]
+  out}
+  ) )
+  
+  
+  # apply registration to the images
+  capture.output(lapply(1:nchannel, function(var){
+    regDens = regFuncs[[var]]
+    subjectIDs = colnames(regDens$warpfd$coefs)
+    # apply registration to the images
+    xp = lapply(1:nrow(imgs), ## register each slide using inverse warp functions
+                function(ind, regDense){
+                  IDind = which(subjectIDs %in% imgSubjectID[ind])
+                  img = raster(imgs[ind,var])
+                  outimg = outimgs[ind, var]
+                  mask = raster(masks[ind])
+                  values(img)[ values(mask)<=maskThr ] = NA
+                  #values(img)[!is.na(values(img)) & values(img)>0] = eval.fd(transform(values(img)[!is.na(values(img)) & values(img)>0]), regDense$warpfd[ind])
+                  #writeRaster(img, filename=outimg)
+                  imgout = calc(img,
+                                # applies the warping function to the image in chunks
+                                fun = function(vec){
+                                  nas = is.na(vec) | vec==0
+                                  ans = rep(0, length(vec))
+                                  vec = transform(vec[!nas]+ offset)
+                                  if(length(vec)!=0){
+                                    ans[!nas] = untransform(eval.fd(vec, regDense$warpfd[IDind]))-offset
+                                    ans[!nas & ans<0] = 0
+                                  }
+                                  return(ans)
+                                }, filename=outimg, overwrite=TRUE)
+                }, regDense=regDens)
+    }
+  ))
+  # update variables
+  imgs = outimgs
+  data = normed
+  }
+  return(list(normedData = normed, normedImages=outimgs))
+  }
+  
+```
+
+
+
+## Overview
+
+
+
+```{r dataSetup, echo=FALSE}
+allMarkers = c("DAPI", "VIMENTIN","SMA","CD3D","CD4","CD8","CD68","CD11B","PANCK","NAKATPASE", 'COLLAGEN', 'PCNA', 'SOX9')
+locationMarkers = c("DAPI", "VIMENTIN","SMA","PANCK","NAKATPASE", 'PCNA', 'SOX9')
+immuneMarkers = c("CD3D","CD4","CD8","CD68","CD11B")
+devtools::install_github('statimagcoll/atlasAnalysis')
+sc = atlasAnalysis::loadQuantifiedPCA()
+sr = atlasAnalysis::loadImagingData(unique(sc$Slide_Region), allMarkers)
+# add tissue category
+sr$broadTissue = factor(sc$broadTissue[ match(sr$slide_region, sc$Slide_Region)])
+
+
+
+# name for downsampled images
+sr[,paste(allMarkers, 'd', sep='_')] = apply(sr[,allMarkers], 2, function(x) gsub('\\.jpg$', '_downsampled.tif', x) )
+# name for normalized images
+sr[,paste(allMarkers, 'dn', sep='_')] = apply(sr[,allMarkers], 2, function(x) gsub('\\.jpg$', '_downsampled_normed.tif', x) )
+# name for normalized images
+nslocationMarkers = paste(allMarkers, 'dns', sep='_')
+sr[,nslocationMarkers] = apply(sr[,allMarkers], 2, function(x) gsub('\\.jpg$', '_downsampled_normed_smoothed.tif', x) )
+```
+
+### Markers
+
+We will use the markers `r paste(locationMarkers, collapse=', ')`, as input to the NMF to define tissue classes and use the immune markers, `r paste(immuneMarkers, collapse=', ')`, to model infiltration into different compartments of the tissue.
+
+
+
+## Image processing
+```{r preprocessParameters, eval=TRUE}
+# This is the percentage of pixels to retain in downsampling
+downsamplePerc=12.5
+# This is the threshold to define a mask from the DAPI image
+dapiThr=2
+# this is the sd of the Gaussian smooth in pixel units of the downsampled image
+sigma=5
+```
+
+Here, we apply image processing steps using c3d to all of file directories. This includes downsampling by a factor of `r downsamplePerc`, masking, and normalization by mean division. The mask is created crudely from the dapi image by thresholding it at `r dapiThr`.
+
+```{r preprocess, eval=FALSE}
+dnsImgs = grep('_dns$', names(sr), value=TRUE)
+mclapply(1:nrow(sr), function(ind){
+  if(!all(file.exists(unlist(sr[ind,dnsImgs])))){
+    message('processing directory', dirname(sr$DAPI[ind]))
+    system(paste('/media/disk2/atlas_mxif/atlasAnalysis/preprocess.sh', dirname(sr$DAPI[ind]), downsamplePerc, dapiThr, sigma)) # , ignore.stdout=TRUE, ignore.stderr = TRUE
+  }
+}, mc.cores = 30)
+
+```
+
+## Compute SNR
+
+```{r, eval=FALSE}
+for(marker in allMarkers[-1]){
+  result = t(mcmapply(snr, sr[,marker], mask=sr[,'DAPI'], maskThr=5, mc.cores=4))
+  colnames(result) = paste(marker, colnames(result), sep="_")
+  sr[,colnames(result)] = result
+}
+```
+
+
+
+
+
+## Spatial Clusters
+
+
+
+### Kmeans
+
+```{r kmeansParameters, eval=TRUE}
+# output file for the kmeans clusters
+sr$locationLabel = gsub('DAPI', 'location_label', sr[,'DAPI_d'])
+sr$locationLabelUntransformed = gsub('DAPI', 'location_label_untransformed', sr[,'DAPI_d'])
+
+# parameters for k-means
+fact = 8
+offset=1/2
+dapiThr = 2
+```
+
+
+
+```{r kmeans, eval=FALSE}
+
+
+
+# extract the smooth un-normalized data from the images
+kMeansMarkers = slocationMarkers
+invisible(kmeansData <- subsampImgs(sr[ss, kMeansMarkers], sr[ss, 'mask'], maskThr = dapiThr, subsamp = fact))
+
+
+set.seed(1234)
+# fit the kmeans model
+X = kmeansData[,kMeansMarkers]
+X = apply(X, 2, function(x) ifelse(is.na(x), min(x, na.rm=TRUE), x))
+sds = apply(X, 2, sd)
+X = sweep(X, 2, sds, '/')
+kmeansMod = kmeans(X, k, iter.max = 200, algorithm = 'MacQueen')
+
+### ASSIGN LABELS
+outimgs = sapply(ss, function(rind){ message(sr$slideRegion[rind]); labelImage(unlist(sr[rind,kMeansMarkers]), centers=kmeansMod$centers[,kMeansMarkers], weights=1/sds, mask=sr[rind, 'mask'], maskThr=dapiThr, outname=sr[rind,'locationLabel']) } )
+```
+
+```{r kmeansUntransformed, eval=FALSE}
+# extract the smooth un-normalized data from the images
+kmeansUntransformedData = subsampImgs(sr[ss, kMeansMarkers], sr[ss, 'mask'], maskThr = dapiThr, subsamp = fact, offset=0, transform = function(x) x)
+
+
+set.seed(1234)
+# fit the kmeans model
+X = kmeansUntransformedData[,kMeansMarkers]
+X = apply(X, 2, function(x) ifelse(is.na(x), min(x, na.rm=TRUE), x))
+sds = apply(X, 2, sd)
+X = sweep(X, 2, sds, '/')
+kmeansMod = kmeans(X, k, iter.max = 200, algorithm = 'MacQueen')
+
+### ASSIGN LABELS
+outimgs = sapply(ss, function(rind){ message(sr$slideRegion[rind]); labelImage(unlist(sr[rind,kMeansMarkers]), centers=kmeansMod$centers[,kMeansMarkers], weights=1/sds, mask=sr[rind, 'mask'], maskThr=dapiThr, offset=0, transform=function(x) x, outname=sr[rind,'locationLabelUntransformed']) } )
+```
+
+```{r kmeansNormed, cache=TRUE, message=FALSE}
+
+# extract the smoothed normalized data from the images
+kMeansNormedMarkers = nslocationMarkers
+ss = which(apply(apply(sr[,kMeansNormedMarkers], 2, file.exists), 1, all))
+kmeansNormedData = subsampImgs(sr[ss, kMeansNormedMarkers], sr[ss, 'DAPI_d'], maskThr = dapiThr, subsamp = fact)
+
+
+set.seed(1234)
+# fit the kmeans model to the normalized data
+Xnormed = kmeansNormedData[,kMeansNormedMarkers]
+Xnormed = apply(Xnormed, 2, function(x) ifelse(is.na(x), min(x, na.rm=TRUE), x))
+sdsnormed = apply(Xnormed, 2, sd)
+Xnormed = sweep(Xnormed, 2, sdsnormed, '/')
+
+elbow = data.frame(ks = 4:15, SS=NA)
+for(k in elbow$ks){
+  kmeansFit = kmeans(Xnormed, k, iter.max = 200, algorithm = 'MacQueen')
+  elbow$SS[elbow$ks==k] = kmeansFit$tot.withinss
+}
+# k = 5, 7, or 13?
+plot(elbow, type='b')
+#kmedMod = pam(log10(locData[,kMeansMarkers]+1), 10)
+
+k=5
+kmeansModNormed = kmeans(Xnormed, k, iter.max = 200, algorithm = 'MacQueen')
+```
+
+```{r assignLabels}
+
+
+sr$locationLabelNormed = gsub('DAPI', 'location_label_normed', sr[,'DAPI_d'])
+outimgs = sapply(ss, function(rind){ message(sr$slideRegion[rind]); labelImage(unlist(sr[rind,kMeansNormedMarkers]), centers=kmeansModNormed$centers[,kMeansNormedMarkers], weights=1/sdsnormed, mask=sr[rind, 'DAPI_d'], maskThr=dapiThr, outname=sr[rind,'locationLabelNormed']) } )
+
+
+tab = sweep(kmeansModNormed$centers, MARGIN = 2, STATS = sdsnormed, FUN = '*')
+knitr::kable(round(tab, 2))
+```
+
+
+```{r, fig.width=7, fig.height=7, results='asis'}
+ctab <- sample(rainbow(256))
+ctab[1:13] = c('#000000', RColorBrewer::brewer.pal(12, 'Set3'))
+for(img in sr$locationLabelNormed[ss]){
+  cat('\n####', basename(dirname(img)), '\n')
+
+  ras = raster(img)
+  plot(ras, col=ctab[1:(k+1)],
+     axes = FALSE,
+     main =  basename(dirname(img)), bty='n')
+  #plot(ras, main=basename(dirname(img)), mar=c(0,0,1,0), bty='l', oma=c(0,0,0,0),mgp=c(0,.7,0))
+}
+```
+
+
+## Quantification 
+
+### Compute proportion of each tissue component
+
+Quantification of proportions of pixels within each tissue compartment.
+
+```{r proportionQuantification}
+vars = c('locationLabel')
+# need to be resorted to match between the two normalization methods
+for(var in vars){
+  propCols = paste0(var, 0:k, '_proportion')
+  pixelCols = paste0(var, 0:k, '_pixel')
+  logitCols = gsub('proportion', 'logit', propCols)
+  sr[,propCols] = NA
+  sr[,pixelCols] = NA
+  sr[,logitCols] = NA
+  
+  # Further break these proportions by tumor region or not
+  sr[ss,pixelCols] = do.call(rbind, mapply(function(x, mask) table(factor(values(raster(x) * raster(mask)), 0:k) ) + 1/2, sr[ss,var], sr[ss, 'tumorMask'], SIMPLIFY = FALSE))
+  sr$npixel = rowSums(sr[,pixelCols[-1]])
+  sr[,propCols[-1]] = sweep(sr[,pixelCols[-1]], 1, sr$npixel, '/')
+  sr[,logitCols[-1]] = log( sr[, propCols[-1]]/(sr[,propCols[2]]) )
+  
+  
+  ### PROPORTION OF CD3D POSITIVE IN EACH TISSUE  
+  cd3pixelCols = paste0('CD3D', 0:k, '_pixel')
+  cd3propCols = paste0('CD3D', 0:k, '_proportion')
+  cd3logitCols = gsub('proportion', 'logit', cd3propCols)
+  sr[,cd3propCols] = NA
+  sr[,cd3pixelCols] = NA
+  sr[,cd3logitCols] = NA
+  
+  sr[ss,cd3pixelCols] = do.call(rbind, mapply(function(x, mask, cd3) table(factor(values(raster(x) * raster(mask) * raster(cd3)), 0:k) ) + 1/2, sr[ss,var], sr[ss, 'tumorMask'], sr[ss,'CD3Dpos'], SIMPLIFY = FALSE))
+  # CD3 positive pixels dividing by total number of pixels
+  sr[,cd3propCols[-1]] = sr[,cd3pixelCols[-1]]/ sr[,pixelCols[-1]]
+  sr[,cd3logitCols[-1]] = log( sr[, cd3propCols[-1]]/(1-sr[, cd3propCols[-1]]) )
+}
+
+
+
+```
+
+### Moran's index
+
+Quantification of Moran's index for different immune marker types. Moran's index quantifies spatial heterogeneity and takes values in $$[-1,1]$$. Regions where a marker aggregates close to itself will have larger values, where as if the marker is dispersed throughout the tissue (but still variable), then it will have smaller values.
+
+
+```{r, moranQuantification}
+
+
+vars = 'CD3Dpos' # immunePosMarkers
+
+# weights for computing Moran's index 
+# units are in original pixel coordinates
+# one cell is about XX pixels across
+weight = focalWeight(raster(sr$DAPI[1]), 8*12)
+size = dim(weight)[1]
+middle = ceiling(size/2)
+# sets middle to zeros
+weight[rowSums((apply(expand.grid(1:size, 1:size), 2, as.numeric)-middle)^2) < (5/2)^2] = 0
+weight = weight/max(weight)
+
+
+#moran(sr$CD8[1], atlas=sr$locationLabel[1], w = weight)
+# need to be resorted to match between the two normalization methods
+# x=sr[9,var]; atlas = sr[9,'locationLabel']; tumorMask=sr[9, 'tumorMask']; w=weight
+# for(var in vars){
+#   moranCols = c(paste0(var, '_moran', 0:k), paste0(var, '_moranTotal'))
+#   sr[,moranCols] = NA
+#   # column zero
+#   morans = mapply(function(x, atlas, tumorMask, w){
+#     atlas = raster(atlas) * raster(tumorMask)
+#     compartments = moran(x, atlas=atlas)
+#     total = moran(x, atlas=tumorMask)
+#     out = c(compartments, total[2])
+#     }, sr[ss,var], atlas=sr$locationLabel[ss], tumorMask=sr[ss,'tumorMask'], MoreArgs = list(w=weight))
+#     # check if all the output is there
+#     failed = sapply(morans, length)
+#     correctn = max(failed)
+#     failed = which(failed<correctn)
+#     morans[failed] = list(rep(NA, correctn))
+#     sr[ss,moranCols] = do.call(rbind, morans)
+# }
+
+
+for(var in vars){
+  moranCols = c(paste0(var, '_moran_', c('epi', 'str')), paste0(var, '_moranTotal'))
+  sr[,moranCols] = NA
+  # column zero
+  # x=sr[2,var]; epi=sr$epiMask[2]; str=sr$strMask[2]; tumorMask=sr[2,'tumorMask']
+  morans = mapply(function(x, epi, str, tumorMask, w){
+    cat(x)
+    epi = raster(epi) * raster(tumorMask)
+    epi = moran(x, atlas=epi)[2]
+    str = raster(str) * raster(tumorMask)
+    str = moran(x, atlas=str)[2]
+    total = moran(x, atlas=tumorMask)
+    out = c(epi, str, total[2])
+    }, x=sr[ss,var], epi=sr$epiMask[ss], str=sr$strMask[ss], tumorMask=sr[ss,'tumorMask'], MoreArgs = list(w=weight))
+  sr[ss,moranCols] = t(morans)
+  
+}
+```
+
+### Moran's cross correlation
+
+Moran's cross-correlation (https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0126158) quantifies the spatial association between two markers. If one marker aggregates around the other, then the spatial association is high, where as if they repel each other then the spatial association is low.
+Like Moran's index, this does not consider a small window at the center of the weight function, so does not correspond to co-expression.
+
+## Models
+
+Outcomes:
+
+1. Proportion of pixels within each tissue class. Did certain tissue classes differ between tumor types?
+2. Proportion of CD8 positive pixels within each tissue class.
+3. Spatial correlation of immune markers within each tissue class. Do immune cells clump together more in particular tissues?
+4. Spatial correlation between immune and other markers. Do immune markers clump around particular types of cells? 
+
+
+
+```{r, fig.width=15, result='asis'}
+srl = reshape(sr, direction='long', varying=c(list(propCols, pixelCols, logitCols, cd3logitCols)), v.names=c('prop', 'pixel', 'logit', 'cd3logit'), ids=sr$slideRegion, timevar='tissueClass', times=0:k)
+
+  # fit the model
+  srlss = srl[!is.na(srl$cd3logit) & !is.infinite(srl$cd3logit) & !is.na(srl$adenSSLcrc),]
+  srlss$tissueClass = factor(srlss$tissueClass, levels = 1:4, labels = c('Unspecified', 'Boundary', 'Epithelium', 'Stroma') )
+  srlss$adenSSLcrc = factor(srlss$adenSSLcrc)
+  
+  srlss = srlss[order(srlss$Slide),]
+  #testModelAll = geepack::geeglm(logit ~ adenSSLcrc * tissueClass, data=srlss, corstr='exchangeable', id=as.factor(paste0(srlss$Slide)))
+  testModelAll = lmer(cd3logit ~ adenSSLcrc * tissueClass + (1|Slide), data=srlss)
+  print(sjPlot::tab_model(testModelAll))
+  # Things that are interesting here... Within each tissue class, is there an effect of adenSSLcrc, Is there an effect in tumor regions, but not adjacent normal regions?
+  
+  boxplot(cd3logit ~ adenSSLcrc * tissueClass ,data=srlss)
+  
+  as.data.frame(summary(pairs(emmeans(testModelAll, ~adenSSLcrc | tissueClass, type='response'))))
+  
+  image(raster(sr$tumorMask[which.min(sr$CD3Dpos_moranTotal)]), col=gray.colors(12))
+```
+
+
+```{r, fig.width=15, result='asis'}
+
+ morans = lapply(paste0(vars, '_moran_'), grep, x=names(sr), value=TRUE)
+ srl = reshape(sr, direction='long', varying=c(morans), v.names=c(paste0(vars, '_moran')), ids=sr$slideRegion, timevar='tissueClass', times=c('epi', 'stroma'))
+  
+  sr = sr[order(sr$Slide),]
+  srss = sr[!is.na(sr$adenSSLcrc) & !is.na(sr$CD3Dpos_moranTotal),]
+  testModel = geepack::geeglm(CD3Dpos_moranTotal ~ adenSSLcrc, data=srss, corstr='exchangeable', id=as.factor(paste0(srss$Slide)))
+  plot(as.factor(srss$adenSSLcrc), srss$CD3Dpos_moranTotal)
+  
+  # fit the model
+  srlss = srl[!is.na(srl$CD3Dpos_moran) & !is.na(srl$adenSSLcrc),]
+  srlss$tissueClass = as.factor(srlss$tissueClass)
+  srlss$adenSSLcrc = factor(srlss$adenSSLcrc)
+  
+  srlss = srlss[order(srlss$Slide),]
+  testModelAll = lme4::lmer(atanh(CD3Dpos_moran) ~ adenSSLcrc * tissueClass + (1|Slide), data=srlss)
+  # Things that are interesting here... Within each tissue class, is there an effect of adenSSLcrc, Is there an effect in tumor regions, but not adjacent normal regions?
+  
+  boxplot(atanh(CD3Dpos_moran) ~ adenSSLcrc * tissueClass ,data=srlss)
+  
+  library(emmeans)
+  as.data.frame(summary(pairs(emmeans(testModelAll, ~adenSSLcrc | tissueClass, type='response'))))
+  
+  image(raster(sr$tumorMask[which.min(sr$CD3Dpos_moranTotal)]), col=gray.colors(12))
+```
