@@ -1,0 +1,139 @@
+---
+title: "MoranI_0607"
+author: "Ruby Xiong"
+date: "7/6/2022"
+output:
+  html_document:
+    number_sections: yes
+    theme: cerulean
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: yes
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, cache.lazy = FALSE)
+library(reshape2)
+library(ggplot2)
+library(hrbrthemes)
+library(dplyr)
+library(gridExtra)
+library(spdep)
+library(multiplexMoran)
+load('/media/disk2/atlas_mxif/data/cell_phenotyped.rds')
+```
+
+# Moran's I vs window size {.tabset}
+
+```{r}
+stromaLabels = c("CD20pos Bcells", "CD4posTcell", "CD8posTcell", "CollagenCD45", "Stromal something", "Treg", "Macrophage")
+epiLabels = levels(sc_HTAfull$label)[ !levels(sc_HTAfull$label) %in% stromaLabels]
+sc_HTAfull$epiCell = ifelse(sc_HTAfull$label %in% stromaLabels, 0, 1)
+sc_HTAfull[, levels(sc_HTAfull$label)] = model.matrix( ~ -1 + label, data=sc_HTAfull)
+dat <- filter(sc_HTAfull, epiCell==1)
+dat <- filter(dat, region=="region_001")
+dat <- filter(dat, region=="region_001")
+slides <- unique(dat$SlideID)[1:10]
+dat <- filter(dat, SlideID %in% slides)
+ADSSL <- c(2,3,5,7,9,1,4,6,8,10)
+rs <- c(10,20,30,40,50,75,100)
+markers <- c("TumorEpiMuc2","TumorStem","IEL","Goblet")
+
+## plot function: Moran's I
+plot.moransI <- function(result.df, name.slide){
+  result.df$marker1 <- rep(c("TumorEpiMuc2","TumorStem","IEL","Goblet"), each=4)
+  result.df$marker2 <- rep(c("TumorEpiMuc2","TumorStem","IEL","Goblet"), 4)
+  plot.df <- melt(result.df,variable.name = "radii", id.vars = c("marker1","marker2"), value.name = "MoransI")
+  plot.df$radii <- as.numeric(levels(plot.df$radii))[plot.df$radii]
+  p <- ggplot(plot.df, aes(x=radii, y=MoransI, group=1)) +
+  geom_line( color="grey") +
+  geom_point(shape=21, color="black", size=0.5)+ theme_bw()+
+  facet_grid(rows=vars(marker1), cols=vars(marker2), scales = "free_y")+
+  ggtitle(name.slide)
+  p
+}
+# plot function for noramlized moran's I
+plot.moransI.standard <- function(result.df, name.slide){
+  result.df$marker <- c("TumorEpiMuc2","TumorStem","IEL","Goblet")
+  plot.df <- melt(result.df,variable.name = "radii", id.vars = "marker", value.name = "MoransI")
+  plot.df$radii <- as.numeric(levels(plot.df$radii))[plot.df$radii]
+  p <- ggplot(plot.df, aes(x=radii, y=MoransI, group=1)) +
+  geom_line( color="grey") +
+  geom_point(shape=21, color="black", size=0.5)+ theme_bw()+
+  facet_wrap(~marker)+
+  ggtitle(name.slide)
+  p
+}
+## plot function for LISA
+plot.lisa <- function(plot.lisaMat, marker.val){
+ggplot(plot.lisaMat, aes(x=x, y=y, color=value)) +
+geom_point(shape=21, size=0.05, alpha=0.5)+
+scale_color_gradient(low = "yellow", high = "red")+theme_bw()+
+ylab(marker.val)+
+facet_wrap(~variable, nrow = 1)
+}
+
+```
+
+```{r plot}
+plots_1 <- plots_2 <- list()
+for(j in ADSSL){
+result1.df <- data.frame(matrix(NA, ncol=length(rs), nrow=16))
+result2.df <- data.frame(matrix(NA, ncol=length(rs), nrow=4))
+colnames(result1.df) <- colnames(result2.df) <- as.character(rs)
+  for(i in 1:length(rs)){
+    dat_i <- filter(dat, SlideID == slides[j])
+    wlist = multiplexMoran::coords2listw(dat_i[,c("x", "y")], k = 500, maxDist = rs[i] )
+    moranMat = multiplexMoran::moran(select(dat_i, TumorEpiMuc2,TumorStem,IEL,Goblet),
+    listw = wlist, demean=TRUE)
+    result1.df[,i] <- as.vector(moranMat)
+    for (k in 1:length(markers)){
+      z_hat <- (moran.test(dat_i[, markers[k]], listw=wlist)$estimate)[1]
+      result2.df[k,i] <- z_hat
+    }
+
+  }
+  plots_1[[j]] <- plot.moransI(result1.df, name.slide = slides[j])
+  plots_2[[j]] <- plot.moransI.standard(result2.df, name.slide = slides[j])
+}
+```
+
+## Adenoma
+
+```{r}
+for( i in 1:5 ){
+  print(plots_1[[ADSSL[i]]])
+}
+
+```
+
+## SSL
+
+```{r}
+for( i in 6:10){
+  print(plots_1[[ADSSL[i]]])
+}
+
+```
+
+
+# Standardized Moran's I vs window size {.tabset}
+
+## Adenoma 
+
+```{r}
+for( i in 1:5 ){
+  print(plots_2[[ADSSL[i]]])
+}
+
+```
+
+## SSL
+
+```{r}
+for( i in 6:10 ){
+  print(plots_2[[ADSSL[i]]])
+}
+```
