@@ -99,7 +99,7 @@ for(j in ADSSL){
     listw = wlist, demean=TRUE)
     result1.df[,i] <- as.vector(moranMat)
     for (k in 1:length(markers)){
-       z_hat <- (moran.test(dat_i[, markers[k]], listw=wlist)$estimate)[1]
+       z_hat <- (moran.test(dat_i[, markers[k]], listw=wlist)$statistic)
        result2.df[k,i] <- z_hat
        
        lisaVec = spdep::localmoran(dat_i[, markers[k]], listw = wlist)
