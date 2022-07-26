@@ -22,13 +22,14 @@ library(dplyr)
 library(gridExtra)
 library(spdep)
 library(multiplexMoran)
-load('/media/disk2/atlas_mxif/data/cell_phenotyped.rds')
+
 ```
 
 # Moran's I vs window size
 
 ```{r fig.height=8, fig.width=8}
 stromaLabels = c("CD20pos Bcells", "CD4posTcell", "CD8posTcell", "CollagenCD45", "Stromal something", "Treg", "Macrophage")
+load('/media/disk2/atlas_mxif/data/cell_phenotyped.rds')
 epiLabels = levels(sc_HTAfull$label)[ !levels(sc_HTAfull$label) %in% stromaLabels]
 sc_HTAfull$epiCell = ifelse(sc_HTAfull$label %in% stromaLabels, 0, 1)
 sc_HTAfull[, levels(sc_HTAfull$label)] = model.matrix( ~ -1 + label, data=sc_HTAfull)
@@ -37,7 +38,7 @@ dat <- filter(dat, region=="region_001")
 dat <- filter(dat, region=="region_001")
 slides <- unique(dat$SlideID)[1:10]
 dat <- filter(dat, SlideID %in% slides)
-ADSSL <- c(2,3,5,7,9,1,4,6,8,10)
+ADSSL <- c(2,3,5,7,9,1,4,6,8,10) # according to variable broadTissue
 rs <- c(50, 100, 250, 500, 600)
 markers <- c("TumorEpiMuc2","TumorStem","IEL","Goblet")
 
@@ -76,31 +77,53 @@ plot.moransI.standard <- function(result.df){
 
 ```
 
+
+
+```{r wlist, eval=FALSE}
+# !!this is coded in the way that the slides are aranged in the order of vector ADSSL. This does not relect the order # of the slides vector, but slides[ADSSL] instead!!
+wlist_list <- list()
+for(j1 in 1:length(ADSSL)){
+  j <- ADSSL[j1]
+  rlist <- list()
+  for(i in 1:length(rs)){
+    dat_i <- filter(dat, SlideID == slides[j])
+    wlist= multiplexMoran::coords2listw(dat_i[,c("x", "y")], k = 500, maxDist = rs[i] )
+    rlist[[i]] <- wlist
+  }
+  wlist_list[[j1]] <- rlist
+}
+save(wlist_list, file="moran_wlist.RData")
+```
+
+
 ```{r plot, eval=FALSE}
 # plots_1 <- plots_2 <- list()
-result1.all <- result2.all <-result3.all <-result4.all <-list()
-for(j in ADSSL){
+result1.all <- result2.all <-result21.all <-result3.all <-result4.all <-list()
+
+for(j1 in ADSSL){
+  j <- ADSSL[j1]
   result1.df <- data.frame(matrix(NA, ncol=length(rs), nrow=16)) # moran's I
   result2.df <- data.frame(matrix(NA, ncol=length(rs), nrow=4)) # Moran's I standardized
-  colnames(result1.df) <- colnames(result2.df) <- as.character(rs)
-  result1.df$slide <- result2.df$slide <-  slides[j]
- 
-  
+  result21.df <- data.frame(matrix(NA, ncol=length(rs), nrow=4)) # Moran's I standardized, randomization=F
+  colnames(result1.df) <- colnames(result2.df) <- colnames(result21.df) <- as.character(rs)
+  result1.df$slide <- result2.df$slide <- result21.df$slide <-  slides[j]
   result3.list <- result4.list <- list()
+  
   for(i in 1:length(rs)){
     result3.df <- data.frame(matrix(NA, ncol=4, nrow=sum(dat$SlideID==slides[j]))) # LISA
     result4.df <- data.frame(matrix(NA, ncol=4, nrow=sum(dat$SlideID==slides[j]))) # LISA standardized
     colnames(result3.df) <- colnames(result4.df) <-markers
     result3.df$slide <- result4.df$slide <- slides[j]
-    
     dat_i <- filter(dat, SlideID == slides[j])
-    wlist = multiplexMoran::coords2listw(dat_i[,c("x", "y")], k = 500, maxDist = rs[i] )
+    wlist <- (wlist_list[[j1]])[[i]]
     moranMat = multiplexMoran::moran(select(dat_i, TumorEpiMuc2,TumorStem,IEL,Goblet),
-    listw = wlist, demean=TRUE)
+      listw = wlist, demean=TRUE)
     result1.df[,i] <- as.vector(moranMat)
     for (k in 1:length(markers)){
        z_hat <- (moran.test(dat_i[, markers[k]], listw=wlist)$statistic)
        result2.df[k,i] <- z_hat
+       z_hat <- (moran.test(dat_i[, markers[k]], listw=wlist, randomisation = FALSE)$statistic)
+       result21.df[k,i] <- z_hat
        
        lisaVec = spdep::localmoran(dat_i[, markers[k]], listw = wlist)
        result3.df[,k] <- lisaVec[,1]
@@ -110,14 +133,15 @@ for(j in ADSSL){
     result3.list[[i]] <- result3.df
     result4.list[[i]] <- result4.df
   }
-result1.all[[j]] <- result1.df
-result2.all[[j]] <- result2.df
-result3.all[[j]] <- result3.list
-result4.all[[j]] <- result4.list
+result1.all[[j1]] <- result1.df
+result2.all[[j1]] <- result2.df
+result21.all[[j1]] <- result21.df
+result3.all[[j1]] <- result3.list
+result4.all[[j1]] <- result4.list
   # plots_1[[j]] <- plot.moransI(result1.df, name.slide = slides[j])
   # plots_2[[j]] <- plot.moransI.standard(result2.df, name.slide = slides[j])
 }
-moran_result_list <- list(result1.all, result2.all, result3.all, result4.all)
+moran_result_list <- list(result1.all, result2.all, result21.all, result3.all, result4.all)
 save(moran_result_list, file="moran_0718.RData")
 ```
 
@@ -145,9 +169,9 @@ plot.moransI(result1.all.df)
 ```
 
 
-# Standardized Moran's I vs window size
+# Standardized Moran's I vs window size {.tabset}
 
-
+## Randomization TRUE
 
 ```{r}
 # for( i in 1:5 ){
@@ -156,7 +180,14 @@ plot.moransI(result1.all.df)
 result2.all.df <- do.call("rbind", moran_result_list[[2]])
 result2.all.df$TumorType <- rep(c("Adenoma", "SSL"), each=(nrow(result2.all.df)/2))
 plot.moransI.standard(result2.all.df)
+```
 
+## Randomization FALSE
+
+```{r}
+result21.all.df <- do.call("rbind", moran_result_list[[3]])
+result21.all.df$TumorType <- rep(c("Adenoma", "SSL"), each=(nrow(result21.all.df)/2))
+plot.moransI.standard(result21.all.df)
 ```
 
 
@@ -173,17 +204,23 @@ Effect of number of cells on value of Moran's I
 
 ```{r fig.width=10, fig.height=4}
 library(dplyr)
-cell.num <- as.data.frame(table(dat$SlideID))
-colnames(cell.num) <- c("slide", "cell.count")
+cell.num <- as.data.frame(table(dat$SlideID, dat$label))
+colnames(cell.num) <- c("slide","marker", "cell.count")
+cell.num <- subset(cell.num, marker %in% markers)
 plot.df <- moransI.df.transfer(result1.all.df)
-cvi.plot.df <- left_join(plot.df, cell.num, by="slide")
+plot.df <- subset(plot.df, marker1==marker2)
+plot.df <- plot.df[,-1]
+colnames(plot.df)[1] <- "marker"
+cvi.plot.df <- left_join(plot.df, cell.num, by=c("slide","marker"))
 ggplot(cvi.plot.df, aes(x=cell.count, y=MoransI))+
   geom_point(aes(color=TumorType), alpha=0.5)+facet_wrap(~radii, nrow=1)+theme_bw()
 ```
 Effect of number of cells on value of standardized Moran's I
 ```{r fig.width=10, fig.height=4}
 plot.df <- mI.standard.transfer(result2.all.df)
-cvi.plot.df <- left_join(plot.df, cell.num, by="slide")
+# plot.df <- plot.df[,-1]
+# colnames(plot.df)[1] <- "marker"
+cvi.plot.df <- left_join(plot.df, cell.num, by=c("slide","marker"))
 ggplot(cvi.plot.df, aes(x=cell.count, y=MoransI))+
   geom_point(aes(color=TumorType), alpha=0.5)+facet_wrap(~radii, nrow=1)+theme_bw()
 ```
@@ -194,7 +231,7 @@ ggplot(cvi.plot.df, aes(x=cell.count, y=MoransI))+
 LISA is taken $\sqrt[\leftroot{-1}\uproot{2}\scriptstyle 5]{LISA}\qquad$ for illustration purposes
 
 ```{r fig.height=10, fig.width=10}
-result3.list <- moran_result_list[[3]]
+result3.list <- moran_result_list[[4]]
 adssl <- rep(c("Adenoma", "SSL"), each=5)
 library(cowplot)
 cube.root <- function(number){
@@ -202,14 +239,15 @@ cube.root <- function(number){
   sign*abs(number)^(1/5)
 }
 plot.lisa <- function(plot.lisaMat, root.trans=TRUE){
-  plot.lisa.df <- melt(plot.lisaMat,variable.name = "Markers", id.vars = c("slide","r","x","y"), 
+  plot.lisa.df <- melt(plot.lisaMat,variable.name = "Markers", id.vars = c("slide","r","x","y","circle.x", "circle.y"), 
                   value.name = "LISA")
   if(root.trans==TRUE){
     plot.lisa.df$LISA <- cube.root(plot.lisa.df$LISA)
   }
   
-  ggplot(data=plot.lisa.df, aes(x=x, y=y, color=LISA)) +
-    geom_point(size=0.05, alpha=0.3)+
+  ggplot(data=plot.lisa.df) +
+    geom_point(aes(x=x, y=y, color=LISA), size=0.05, alpha=0.3)+
+    geom_point(aes(x=circle.x, y=circle.y, size=r), shape=1, color="green")+
     scale_color_gradient2()+
     theme_dark()+theme(legend.position="top",legend.text = element_text(angle = 50))+
     facet_grid(rows=vars(r), cols=vars(Markers), scales = "free_y")
@@ -219,6 +257,8 @@ lisa.df.print <- function(i){
   plot.lisaMat <- do.call("rbind", result3.df)
   plot.lisaMat$x <- dat[dat$SlideID==plot.lisaMat$slide[1],"x"]
   plot.lisaMat$y <- dat[dat$SlideID==plot.lisaMat$slide[1],"y"]
+  plot.lisaMat$circle.x <- max(plot.lisaMat$x)-plot.lisaMat$r
+  plot.lisaMat$circle.y <- max(plot.lisaMat$y)-plot.lisaMat$r
   p1 <- plot.lisa(plot.lisaMat)+ggtitle(paste(slides[i], adssl[i]))
   dat.i <- dat[dat$SlideID==plot.lisaMat$slide[1],]
   dat.i <- subset(dat.i, dat.i$label %in% markers)
@@ -297,17 +337,20 @@ lisa.df.print(10)
 # Standardized Lisa {.tabset}
 
 ```{r fig.height=10, fig.width=10}
-result4.list <- moran_result_list[[4]]
+result4.list <- moran_result_list[[5]]
 z.lisa.df.print <- function(i){
   result4.df <- result4.list[[i]]
   plot.lisaMat <- do.call("rbind", result4.df)
   plot.lisaMat$x <- dat[dat$SlideID==plot.lisaMat$slide[1],"x"]
   plot.lisaMat$y <- dat[dat$SlideID==plot.lisaMat$slide[1],"y"]
+  plot.lisaMat$circle.x <- max(plot.lisaMat$x)-plot.lisaMat$r
+  plot.lisaMat$circle.y <- max(plot.lisaMat$y)-plot.lisaMat$r
   p1 <- plot.lisa(plot.lisaMat, root.trans=FALSE)+
     ggtitle(paste(slides[i], adssl[i]))
   dat.i <- dat[dat$SlideID==plot.lisaMat$slide[1],]
   dat.i <- subset(dat.i, dat.i$label %in% markers)
   dat.i$label <- factor(dat.i$label, levels = markers)
+  
   p2 <- ggplot(dat.i, aes(x=x, y=y))+geom_point(size=0.05)+
     theme_bw()+facet_wrap(~label, scales = "fixed", nrow=1)
   pp <- plot_grid(p1, p2, nrow = 2, rel_heights = c(4/5, 1/5))
@@ -369,5 +412,149 @@ z.lisa.df.print(9)
 
 ```{r fig.height=10, fig.width=10}
 z.lisa.df.print(10)
+```
+
+# LISA quantile plot {.tabset}
+
+```{r}
+lisa.quantile <- function(list.lisa, marker.name){
+  lisa.value <- list.lisa[,marker.name]
+  slide <- list.lisa[1,"slide"]
+  r <- list.lisa[1, "r"]
+  plot.df <- data.frame(x=((1:100)/100), y=quantile(lisa.value, probs = ((1:100)/100), na.rm = TRUE),
+                        slide=slide, r=r, marker=marker.name)
+  plot.df 
+}
+
+lisa.res.proc <- function(lisa.result.all, 
+                          markers = c("TumorEpiMuc2","TumorStem","IEL","Goblet")){
+  lisa.quantile.list <- list()
+  for(i in 1:length(markers)){
+    markeri <- markers[i]
+    res.l.l <- list()
+    for(j in 1:length(lisa.result.all)){
+      lisa.j <- lisa.result.all[[j]]
+      res.l.1 <- lapply(lisa.j, lisa.quantile, marker.name=markeri)
+      res.l.1 <- do.call("rbind", res.l.1)
+      res.l.l[[j]] <- res.l.1
+    }
+    plot.marker.df <- do.call("rbind", res.l.l)
+    lisa.quantile.list[[i]] <- plot.marker.df
+  }
+  do.call("rbind", lisa.quantile.list)
+}
+```
+
+
+## LISA
+
+```{r fig.width=12, fig.height=8}
+plot.df <- lisa.res.proc(moran_result_list[[4]])
+ggplot(plot.df , aes(x=x,y=y, group=slide))+
+  scale_x_continuous(breaks = c(0.1,0.5,0.9))+
+  geom_line(aes(color=slide), alpha=0.5)+facet_grid(rows=vars(marker), cols=vars(r), scales = "free_y")
+```
+
+## LISA (2 color)
+
+```{r fig.width=12, fig.height=8}
+tumorTypeSlide <- data.frame(slide=slides[ADSSL], tumor.type=adssl)
+plot.df <- left_join(plot.df, tumorTypeSlide, by = "slide")
+ggplot(plot.df , aes(x=x,y=y, group=slide))+
+  scale_x_continuous(breaks = c(0.1,0.5,0.9))+
+  geom_line(aes(color=tumor.type), alpha=0.5)+facet_grid(rows=vars(marker), cols=vars(r), scales = "free_y")
+```
+
+## Standardized LISA
+
+
+```{r fig.width=12, fig.height=8}
+plot.df <- lisa.res.proc(moran_result_list[[5]])
+ggplot(plot.df , aes(x=x,y=y, group=slide))+
+  scale_x_continuous(breaks = c(0.1,0.5,0.9))+
+  geom_line(aes(color=slide), alpha=0.5)+facet_grid(rows=vars(marker), cols=vars(r), scales = "free_y")
+```
+
+## Standardized LISA (2 color)
+
+```{r}
+plot.df <- left_join(plot.df, tumorTypeSlide, by = "slide")
+ggplot(plot.df , aes(x=x,y=y, group=slide))+
+  scale_x_continuous(breaks = c(0.1,0.5,0.9))+
+  geom_line(aes(color=tumor.type), alpha=0.5)+facet_grid(rows=vars(marker), cols=vars(r), scales = "free_y")
+```
+
+# 95th quantile of LISA value against sample size {.tabset}
+
+## LISA
+
+```{r fig.width=12, fig.height=8}
+quantile.mat <- as.data.frame(matrix(NA, nrow=1, ncol=4))
+for(i in 1:length(result3.list)){
+  lisa.slide <- result3.list[[i]]
+  for(j in 1:length(lisa.slide)){
+    lisa.sr <- lisa.slide[[j]]
+    for(k in markers){
+      ijk_95 <- quantile(lisa.sr[,k], .95)
+      quantile.mat <- rbind(quantile.mat, c(ijk_95, lisa.sr$slide[1], lisa.sr$r[1], k))
+    }
+  }
+}
+lisa.q.95 <- quantile.mat[-1,]
+colnames(lisa.q.95) <- c("quantile", "slide", "r", "marker")
+lisa.q.95$r <- as.integer(lisa.q.95$r)
+lisa.q.95$quantile <- as.numeric(lisa.q.95$quantile)
+lisa.q.95 <- left_join(lisa.q.95, cell.num, by=c("slide", "marker"))
+lisa.q.95 <- left_join(lisa.q.95, tumorTypeSlide, by=c("slide"))
+ggplot(lisa.q.95, aes(x=cell.count,y=quantile, group=slide))+
+  scale_x_continuous(breaks = c(1000, 2000, 3000, 4000))+
+  geom_point(aes(color=tumor.type), alpha=0.5)+
+  facet_grid(rows=vars(marker), cols=vars(r), scales = "free_y")
+```
+
+## Standardized LISA
+
+```{r fig.width=12, fig.height=8}
+quantile.mat <- as.data.frame(matrix(NA, nrow=1, ncol=4))
+for(i in 1:length(result4.list)){
+  lisa.slide <- result4.list[[i]]
+  for(j in 1:length(lisa.slide)){
+    lisa.sr <- lisa.slide[[j]]
+    for(k in markers){
+      ijk_95 <- quantile(lisa.sr[,k], .95, na.rm=TRUE)
+      quantile.mat <- rbind(quantile.mat, c(ijk_95, lisa.sr$slide[1], lisa.sr$r[1], k))
+    }
+  }
+}
+lisaz.q.95 <- quantile.mat[-1,]
+colnames(lisaz.q.95) <- c("quantile", "slide", "r", "marker")
+lisaz.q.95$r <- as.integer(lisaz.q.95$r)
+lisaz.q.95$quantile <- as.numeric(lisaz.q.95$quantile)
+lisaz.q.95 <- left_join(lisaz.q.95, cell.num, by=c("slide", "marker"))
+lisaz.q.95 <- left_join(lisaz.q.95, tumorTypeSlide, by=c("slide"))
+ggplot(lisaz.q.95, aes(x=cell.count,y=quantile, group=slide))+
+  scale_x_continuous(breaks = c(1000, 2000, 3000, 4000))+
+  geom_point(aes(color=tumor.type), alpha=0.5)+
+  facet_grid(rows=vars(marker), cols=vars(r), scales = "free_y")
+```
+
+# GEE 
+
+LISA 
+
+```{r}
+library(geepack)
+slide.id <- data.frame(slide=slides, id=1:length(slides))
+lisa.q.95 <- left_join(lisa.q.95, slide.id)
+m1 <- geeglm(quantile ~ tumor.type, id=id, data=lisa.q.95 , family='gaussian', corstr='independence')
+summary(m1)
+```
+
+Standardized LISA: 
+
+```{r}
+lisaz.q.95 <- left_join(lisaz.q.95, slide.id)
+m2 <- geeglm(quantile ~ tumor.type, id=id, data=lisaz.q.95 , family='gaussian', corstr='independence')
+summary(m2)
 ```
 
